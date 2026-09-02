@@ -1067,9 +1067,11 @@ function tabPlanificar(){
   h+='<div class="card" style="margin-bottom:14px"><h2>4 · Partidos programados '+
     '<span class="sub">'+prog.length+' sin jugar</span>'+botonAyuda('apEdit')+'</h2>'+
     ayuda('apEdit','Estos ya están en el Sheet. Si se cambia el día o la hora, editalos acá y guardá: '+
-      'se actualiza el Sheet directamente, sin abrirlo.')+
+      'se actualiza el Sheet directamente, sin abrirlo. La <b>✕</b> borra el partido del Sheet, '+
+      'por si se canceló o se cargó por error.')+
     (prog.length? '<div class="tw"><table><thead><tr><th>ID</th><th class="n">J</th><th>Partido</th>'+
-      '<th>Fecha</th><th>Hora</th><th>Estado</th></tr></thead><tbody>'+
+      '<th>Fecha</th><th>Hora</th><th>Estado</th>'+(hayAPI()?'<th class="noprint"></th>':'')+
+      '</tr></thead><tbody>'+
       prog.map(p=>{
         const c=S.editPartidos[p.id]||{};
         const f=c.fecha!==undefined?c.fecha:p.fecha;
@@ -1080,7 +1082,9 @@ function tabPlanificar(){
           '<td><input type="date" data-ep="fecha" data-id="'+esc(p.id)+'" value="'+esc(f)+'" style="min-width:130px"></td>'+
           '<td><input type="time" data-ep="hora" data-id="'+esc(p.id)+'" value="'+esc(ho)+'" style="min-width:96px"></td>'+
           '<td>'+(p.estado==='SUSPENDIDO'?'<span class="tag r">suspendido</span>'
-            :has(f)?'<span class="tag v">con fecha</span>':'<span class="tag a">sin fecha</span>')+'</td></tr>';
+            :has(f)?'<span class="tag v">con fecha</span>':'<span class="tag a">sin fecha</span>')+'</td>'+
+          (hayAPI()?'<td class="n noprint"><button class="btn sm" data-borrarp="'+esc(p.id)+
+            '" title="Borrar este partido del Sheet">✕</button></td>':'')+'</tr>';
       }).join('')+'</tbody></table></div>'+
       (!hayAPI()
         ? '<div class="pad muted" style="font-size:11.5px">Sin el puente de escritura hay que editarlos en el Sheet.</div>'
@@ -1342,6 +1346,7 @@ function enlazar(){
   });
   const se=$('#btnSaveEdit'); if(se) se.onclick=guardarReprogramacion;
   const ue=$('#btnUndoEdit'); if(ue) ue.onclick=()=>{ S.editPartidos={}; render(); };
+  document.querySelectorAll('[data-borrarp]').forEach(b=>b.onclick=()=>borrarPartido(b.dataset.borrarp));
 
   /* registro de goleadores */
   bindFiltro('#rgPartido','rgPartido'); bindFiltro('#rgLado','rgLado');
@@ -1554,6 +1559,30 @@ async function guardarBorradorSheet(){
     filas.every(f=>S.partidos.some(p=>p.id===f[0])),filas.length+' partidos subidos');
   if(ok){ S.borrador=[]; guardarBorrador(); render(); }
 }
+/* Borra del Sheet un partido programado (y lo que dependa de él) */
+async function borrarPartido(id){
+  const p=S.partidos.find(x=>x.id===id);
+  if(!p) return;
+  const goles=S.goles.filter(g=>g.pid===id).length;
+  const tarj=S.tarjetas.filter(t=>t.pid===id).length;
+  const extra=[goles?goles+' goleador'+(goles>1?'es':''):'',tarj?tarj+' tarjeta'+(tarj>1?'s':''):'']
+    .filter(Boolean).join(' y ');
+  if(!confirm('¿Borrar el partido '+id+' del Sheet?\n\n'+corto(p.local)+' vs '+corto(p.visita)+
+    (extra? '\n\nTambién se borra: '+extra+'.' : '')+'\n\nEsto no se puede deshacer.')) return;
+  if(S.guardando) return;
+  S.guardando=true;
+  try{
+    toast('Borrando '+id+'…');
+    if(goles){ await apiPost({action:'borrarGoles',pid:id}); await esperar(1100); }
+    if(tarj){ await apiPost({action:'borrarFilas',hoja:'TARJETAS',columna:'PARTIDO_ID',valor:id}); await esperar(1100); }
+    await apiPost({action:'borrarFilas',hoja:'PARTIDOS',columna:'ID',valor:id});
+    await esperar(2600);
+    await cargar(); render();
+    toast(S.partidos.some(x=>x.id===id)? 'No se pudo borrar '+id : id+' borrado ✔');
+  }catch(e){ toast(e.message); }
+  finally{ S.guardando=false; }
+}
+
 /* Manda al Sheet los cambios de fecha/hora de los partidos ya programados */
 async function guardarReprogramacion(){
   const ids=Object.keys(S.editPartidos);
