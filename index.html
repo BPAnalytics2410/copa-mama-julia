@@ -1066,22 +1066,29 @@ function tabPlanificar(){
   const cambios=Object.keys(S.editPartidos).length;
   h+='<div class="card" style="margin-bottom:14px"><h2>4 · Partidos programados '+
     '<span class="sub">'+prog.length+' sin jugar</span>'+botonAyuda('apEdit')+'</h2>'+
-    ayuda('apEdit','Estos ya están en el Sheet. Si se cambia el día o la hora, editalos acá y guardá: '+
-      'se actualiza el Sheet directamente, sin abrirlo. La <b>✕</b> borra el partido del Sheet, '+
-      'por si se canceló o se cargó por error.')+
+    ayuda('apEdit','Todo lo de un partido ya programado se maneja acá: si cambia el <b>día o la hora</b> '+
+      'lo editás y guardás, y cuando se juega le ponés el <b>marcador</b> (GL = goles del local, '+
+      'GV = del visitante) y pasa a jugado. Los goleadores se cargan en la pestaña <b>Goleadores</b>. '+
+      'La <b>✕</b> borra el partido del Sheet, por si se canceló o se cargó por error.')+
     (prog.length? '<div class="tw"><table><thead><tr><th>ID</th><th class="n">J</th><th>Partido</th>'+
-      '<th>Fecha</th><th>Hora</th><th>Estado</th>'+(hayAPI()?'<th class="noprint"></th>':'')+
-      '</tr></thead><tbody>'+
+      '<th>Fecha</th><th>Hora</th><th class="n">GL</th><th class="n">GV</th><th>Estado</th>'+
+      (hayAPI()?'<th class="noprint"></th>':'')+'</tr></thead><tbody>'+
       prog.map(p=>{
         const c=S.editPartidos[p.id]||{};
         const f=c.fecha!==undefined?c.fecha:p.fecha;
         const ho=c.hora!==undefined?c.hora:p.hora;
+        const gl=c.gl!==undefined?c.gl:(p.gl==null?'':p.gl);
+        const gv=c.gv!==undefined?c.gv:(p.gv==null?'':p.gv);
+        const conMarcador=has(gl)&&has(gv);
         return '<tr'+(S.editPartidos[p.id]?' style="box-shadow:inset 3px 0 0 var(--ambar)"':'')+'>'+
           '<td class="b">'+esc(p.id)+'</td><td class="n">'+esc(p.jornada)+'</td>'+
           '<td>'+esc(corto(p.local))+' <span class="muted">vs</span> '+esc(corto(p.visita))+'</td>'+
           '<td><input type="date" data-ep="fecha" data-id="'+esc(p.id)+'" value="'+esc(f)+'" style="min-width:130px"></td>'+
           '<td><input type="time" data-ep="hora" data-id="'+esc(p.id)+'" value="'+esc(ho)+'" style="min-width:96px"></td>'+
-          '<td>'+(p.estado==='SUSPENDIDO'?'<span class="tag r">suspendido</span>'
+          '<td class="n"><input type="number" min="0" data-ep="gl" data-id="'+esc(p.id)+'" value="'+esc(gl)+'" style="width:56px;text-align:center"></td>'+
+          '<td class="n"><input type="number" min="0" data-ep="gv" data-id="'+esc(p.id)+'" value="'+esc(gv)+'" style="width:56px;text-align:center"></td>'+
+          '<td>'+(conMarcador?'<span class="tag v">pasa a jugado</span>'
+            :p.estado==='SUSPENDIDO'?'<span class="tag r">suspendido</span>'
             :has(f)?'<span class="tag v">con fecha</span>':'<span class="tag a">sin fecha</span>')+'</td>'+
           (hayAPI()?'<td class="n noprint"><button class="btn sm" data-borrarp="'+esc(p.id)+
             '" title="Borrar este partido del Sheet">✕</button></td>':'')+'</tr>';
@@ -1094,26 +1101,10 @@ function tabPlanificar(){
             ' cambio'+(cambios>1?'s':'')+' en el Sheet</button></div>'+
             '<div style="flex:0 0 auto"><button class="btn" id="btnUndoEdit">Descartar</button></div></div>'
           : '<div class="pad muted noprint" style="font-size:11.5px">Todo guardado ✔ '+
-            'Cambiá una fecha o una hora y aparece el botón para subirlo al Sheet.</div>')
+            'Cambiá una fecha, una hora o cargá el marcador y aparece el botón para subirlo al Sheet.</div>')
       : '<div class="pad muted">No hay partidos programados sin jugar en '+esc(cat)+'.</div>')+
     '</div>';
 
-  h+='<div class="card"><h2>5 · Cargar resultado y goleadores</h2><div class="pad">'+
-    '<div class="muted" style="font-size:12px;margin-bottom:10px">Elegí un partido, poné el marcador y los goleadores. '+
-    'Te genero las filas para pegar en la hoja <code>GOLES</code> y te digo qué celdas del partido actualizar.</div>'+
-    '<div class="row" style="margin-bottom:10px"><div><label>Partido</label><select id="rPartido">'+
-      S.partidos.filter(p=>p.categoria===cat).concat(S.borrador.filter(p=>p.categoria===cat).map(p=>({...p,borrador:true})))
-        .sort((a,b)=>(a.jugado?1:0)-(b.jugado?1:0)||(a.jornada||0)-(b.jornada||0)||String(a.id).localeCompare(b.id)).map(p=>
-        '<option value="'+esc(p.id)+'">'+esc(p.id)+' · J'+p.jornada+' · '+esc(corto(p.local))+' vs '+esc(corto(p.visita))+
-        (p.borrador?' (borrador)':p.jugado?' ('+p.gl+'-'+p.gv+')':' (pendiente)')+'</option>').join('')+
-      '</select></div>'+
-      '<div style="flex:0 0 80px"><label>GL</label><input id="rGl" type="number" min="0"></div>'+
-      '<div style="flex:0 0 80px"><label>GV</label><input id="rGv" type="number" min="0"></div></div>'+
-    '<div class="row"><div><label>Goleadores (uno por línea: JUGADOR, EQUIPO L o V, GOLES)</label>'+
-      '<textarea id="rGoles" rows="4" placeholder="ANDRES MALDONADO, L, 2&#10;MARTIN HURTADO, V, 1"></textarea></div></div>'+
-    '<div class="row" style="margin-top:10px"><div style="flex:0 0 auto"><button class="btn pri" id="btnRes">Generar filas</button></div></div>'+
-    '<div id="rOut" style="margin-top:12px"></div>'+
-    '</div></div>';
   return h;
 }
 
@@ -1321,7 +1312,6 @@ function enlazar(){
   const cp=$('#btnCopy'); if(cp) cp.onclick=()=>{ copiar(borradorTSV()); };
   const cs=$('#btnCsv'); if(cs) cs.onclick=descargarCSV;
   const cl=$('#btnClear'); if(cl) cl.onclick=()=>{ if(confirm('¿Vaciar el borrador?')){ S.borrador=[]; guardarBorrador(); render(); } };
-  const br=$('#btnRes'); if(br) br.onclick=generarResultado;
   const bc=$('#btnCruces'); if(bc) bc.onclick=()=>mandarCruces('H');
   const bf=$('#btnCrucesF'); if(bf) bf.onclick=()=>mandarCruces('F');
 
@@ -1338,9 +1328,10 @@ function enlazar(){
     const p=S.partidos.find(x=>x.id===id);
     if(!S.editPartidos[id]) S.editPartidos[id]={};
     S.editPartidos[id][campo]=inp.value;
-    /* si vuelve a lo original, dejo de contarlo como cambio */
+    /* si volvió a lo que ya estaba en el Sheet, dejo de contarlo como cambio */
     const c=S.editPartidos[id];
-    const igual=(c.fecha===undefined||c.fecha===p.fecha)&&(c.hora===undefined||c.hora===p.hora);
+    const orig={fecha:p.fecha,hora:p.hora,gl:p.gl==null?'':String(p.gl),gv:p.gv==null?'':String(p.gv)};
+    const igual=['fecha','hora','gl','gv'].every(k=>c[k]===undefined||String(c[k])===orig[k]);
     if(igual) delete S.editPartidos[id];
     render();
   });
@@ -1445,43 +1436,6 @@ function copiar(txt){
   try{ document.execCommand('copy'); toast('Copiado ✔ pegalo en Sheets'); }
   catch(e){ prompt('Copiá esto:',txt); }
   ta.remove();
-}
-function generarResultado(){
-  const id=$('#rPartido').value;
-  const p=S.partidos.find(x=>x.id===id) || S.borrador.find(x=>x.id===id);
-  if(!p){ toast('Elegí un partido'); return; }
-  const gl=$('#rGl').value, gv=$('#rGv').value;
-  const lineas=$('#rGoles').value.split('\n').map(l=>l.trim()).filter(Boolean);
-  const filas=[], errores=[];
-  lineas.forEach(l=>{
-    const parts=l.split(',').map(x=>x.trim());
-    if(parts.length<3){ errores.push(l+'  → formato: JUGADOR, L o V, GOLES'); return; }
-    const lv=up(parts[1]), n=num(parts[parts.length-1]);
-    const equipo = lv==='L'||lv==='LOCAL' ? p.local : lv==='V'||lv==='VISITA' ? p.visita : null;
-    if(!equipo){ errores.push(l+'  → poné L (local) o V (visita)'); return; }
-    if(!n){ errores.push(l+'  → goles inválidos'); return; }
-    filas.push([p.id,p.categoria,p.jornada,equipo,up(parts[0]),n]);
-  });
-  const suma=filas.reduce((s,f)=>s+f[5],0);
-  const marc=(has(gl)&&has(gv))? num(gl)+num(gv) : null;
-  const tsv=filas.map(f=>f.join('\t')).join('\n');
-  const idx=S.partidos.findIndex(x=>x.id===p.id);
-  const dondeEsta = idx>=0
-    ? 'Buscá la fila del <b>'+esc(p.id)+'</b> (aprox. fila <b>'+(idx+2)+'</b>) y poné:'
-    : 'Ese partido todavía está en el borrador: primero pegalo en <code>PARTIDOS</code> y después poné:';
-  $('#rOut').innerHTML =
-    (errores.length? '<div class="warn" style="margin-bottom:10px"><b>Revisá:</b><br>'+errores.map(esc).join('<br>')+'</div>':'')+
-    (marc!=null&&suma!==marc? '<div class="warn" style="margin-bottom:10px"><b>Ojo:</b> el marcador suma '+marc+
-      ' goles y cargaste '+suma+' en la lista.</div>':'')+
-    '<div class="card"><h3>Para la hoja PARTIDOS</h3><div class="pad">'+dondeEsta+'<br>'+
-      '<code>GL = '+(has(gl)?esc(gl):'?')+'</code> · <code>GV = '+(has(gv)?esc(gv):'?')+'</code> · <code>ESTADO = JUGADO</code>'+
-    '</div></div>'+
-    (filas.length? '<div class="card" style="margin-top:12px"><h3>Para la hoja GOLES <span class="sub">'+filas.length+
-      ' filas · '+suma+' goles</span></h3><div class="tw"><table><thead><tr><th>PARTIDO_ID</th><th>CATEGORIA</th>'+
-      '<th class="n">JORNADA</th><th>EQUIPO</th><th>JUGADOR</th><th class="n">GOLES</th></tr></thead><tbody>'+
-      filas.map(f=>'<tr>'+f.map((c,i)=>'<td'+(i===2||i===5?' class="n"':'')+'>'+esc(c)+'</td>').join('')+'</tr>').join('')+
-      '</tbody></table></div><div class="pad"><button class="btn pri" id="btnCopyG">📋 Copiar filas de GOLES</button></div></div>':'');
-  const b=$('#btnCopyG'); if(b) b.onclick=()=>copiar(tsv);
 }
 
 /* ---------- registro de goles / tarjetas ---------- */
@@ -1591,11 +1545,17 @@ async function guardarReprogramacion(){
   S.guardando=true;
   try{
     toast('Actualizando '+ids.length+' partido'+(ids.length>1?'s':'')+'…');
+    let jugados=0;
     for(const id of ids){
       const c=S.editPartidos[id], p=S.partidos.find(x=>x.id===id);
+      const gl=c.gl!==undefined?c.gl:(p.gl==null?'':p.gl);
+      const gv=c.gv!==undefined?c.gv:(p.gv==null?'':p.gv);
+      const pasaAJugado=has(gl)&&has(gv);
+      if(pasaAJugado) jugados++;
       await apiPost({action:'setPartido',id,
         fecha:c.fecha!==undefined?c.fecha:p.fecha,
-        hora:c.hora!==undefined?c.hora:p.hora});
+        hora:c.hora!==undefined?c.hora:p.hora,
+        gl, gv, estado: pasaAJugado?'JUGADO':''});
       await esperar(900);
     }
     await esperar(1800);
@@ -1604,11 +1564,16 @@ async function guardarReprogramacion(){
     const fallaron=ids.filter(id=>{
       const c=S.editPartidos[id], p=S.partidos.find(x=>x.id===id);
       if(!p) return true;
-      return (c.fecha!==undefined&&c.fecha&&p.fecha!==c.fecha)||(c.hora!==undefined&&c.hora&&p.hora!==c.hora);
+      return (c.fecha!==undefined&&c.fecha&&p.fecha!==c.fecha)
+          || (c.hora!==undefined&&c.hora&&p.hora!==c.hora)
+          || (c.gl!==undefined&&has(c.gl)&&String(p.gl)!==String(c.gl))
+          || (c.gv!==undefined&&has(c.gv)&&String(p.gv)!==String(c.gv));
     });
     S.editPartidos={};
     render();
-    toast(fallaron.length? 'No se actualizaron: '+fallaron.join(', ') : 'Partidos actualizados ✔');
+    toast(fallaron.length? 'No se actualizaron: '+fallaron.join(', ')
+      : jugados? 'Resultado guardado ✔ ahora cargá los goleadores'
+      : 'Partidos actualizados ✔');
   }catch(e){ toast(e.message); }
   finally{ S.guardando=false; }
 }
