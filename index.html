@@ -273,7 +273,7 @@ const LS_DRAFT = 'cmj_borrador';
 const S = {
   cfg:{}, equipos:[], partidos:[], goles:[], tarjetas:[], pagos:[],
   origen:'', tab:'resumen', borrador:[], filtros:{},
-  golesNuevos:[], tarjNuevas:[], pagosNuevos:[], editPartidos:{}, guardando:false
+  golesNuevos:[], tarjNuevas:[], pagosNuevos:[], editPartidos:{}, editPagos:{}, guardando:false
 };
 
 /* ---------- utils ---------- */
@@ -1417,17 +1417,35 @@ function cardDetallePago(equipo){
         (saldo>0?'Saldo pendiente':'Al día ✔')+'</div></div>'+
       '<div class="stat a"><div class="n">$'+deuda.toFixed(2)+'</div><div class="l">Arbitraje adeudado</div></div>'+
     '</div>'+
-    (pagos.length? '<div class="tw"><table><thead><tr><th class="n">J</th><th>Fecha</th><th>Concepto</th>'+
-      '<th>Obs.</th><th class="n">Valor</th>'+(hayAPI()?'<th class="noprint"></th>':'')+'</tr></thead><tbody>'+
-      pagos.map(p=>'<tr><td class="n">'+esc(p.cuota||'—')+'</td>'+
-        '<td>'+(has(p.fecha)?esc(fechaTxt(p.fecha)):'<span class="muted">sin fecha</span>')+'</td>'+
-        '<td>'+esc(p.concepto)+'</td><td class="muted">'+esc(p.obs||'')+'</td>'+
-        '<td class="n b">$'+p.valor.toFixed(2)+'</td>'+
-        (hayAPI()?'<td class="n noprint"><button class="btn sm" data-borrarpago="'+
-          esc([p.equipo,p.concepto,p.cuota,p.fecha,p.valor].join('||'))+'" title="Borrar este pago">✕</button></td>':'')+
-        '</tr>').join('')+'</tbody></table></div>'+
-      '<div class="pad muted" style="font-size:11.5px">Para corregir un pago: borralo con la ✕ y volvé a '+
-      'registrarlo arriba con el valor correcto.</div>'
+    (pagos.length? '<div class="tw"><table><thead><tr><th class="n">Jornada</th><th>Fecha</th><th>Concepto</th>'+
+      '<th class="n">Valor</th>'+(hayAPI()?'<th class="noprint"></th>':'')+'</tr></thead><tbody>'+
+      pagos.map(p=>{
+        const clave=[p.equipo,p.concepto,p.cuota,p.fecha,p.valor].join('||');
+        const c=S.editPagos[clave]||{};
+        const cuota=c.cuota!==undefined?c.cuota:p.cuota;
+        const fecha=c.fecha!==undefined?c.fecha:p.fecha;
+        const valor=c.valor!==undefined?c.valor:p.valor;
+        return '<tr'+(S.editPagos[clave]?' style="box-shadow:inset 3px 0 0 var(--ambar)"':'')+'>'+
+          '<td class="n"><input type="number" min="1" data-editpago="cuota" data-clave="'+esc(clave)+
+            '" value="'+esc(cuota)+'" placeholder="—" style="width:56px;text-align:center"></td>'+
+          '<td><input type="date" data-editpago="fecha" data-clave="'+esc(clave)+'" value="'+esc(fecha)+
+            '" style="min-width:130px"></td>'+
+          '<td>'+esc(p.concepto)+'</td>'+
+          '<td class="n"><input type="number" min="0" step="0.5" data-editpago="valor" data-clave="'+esc(clave)+
+            '" value="'+esc(valor)+'" style="width:90px;text-align:right"></td>'+
+          (hayAPI()?'<td class="n noprint"><button class="btn sm" data-borrarpago="'+esc(clave)+
+            '" title="Borrar este pago">✕</button></td>':'')+
+          '</tr>';
+      }).join('')+'</tbody></table></div>'+
+      (hayAPI()
+        ? (Object.keys(S.editPagos).length
+          ? '<div class="pad row noprint">'+
+            '<div style="flex:0 0 auto"><button class="btn pri" id="btnSavePagos">💾 Guardar '+
+            Object.keys(S.editPagos).length+' cambio'+(Object.keys(S.editPagos).length>1?'s':'')+' en el Sheet</button></div>'+
+            '<div style="flex:0 0 auto"><button class="btn" id="btnUndoPagos">Descartar</button></div></div>'
+          : '<div class="pad muted noprint" style="font-size:11.5px">Todo guardado ✔ Cambiá la jornada, la fecha '+
+            'o el valor de un pago y aparece el botón para subirlo al Sheet.</div>')
+        : '<div class="pad muted" style="font-size:11.5px">Para editar un pago necesitás el puente de escritura conectado.</div>')
       : '<div class="pad muted">Este equipo todavía no tiene ningún pago registrado.</div>')+
     '</div>';
 }
@@ -1652,6 +1670,20 @@ function enlazar(){
   document.querySelectorAll('[data-borrarpago]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); borrarPago(b.dataset.borrarpago); });
   const cp2=$('#btnCerrarPago'); if(cp2) cp2.onclick=()=>{ S.filtros.qEquipo=''; render(); };
   const ip=$('#btnImgPago'); if(ip) ip.onclick=()=>imagenPago(S.filtros.qEquipo);
+  /* editar un pago ya cargado: jornada, fecha o valor */
+  document.querySelectorAll('[data-editpago]').forEach(inp=>inp.onchange=()=>{
+    const clave=inp.dataset.clave, campo=inp.dataset.editpago;
+    const [oEquipo,oConcepto,oCuota,oFecha,oValor]=clave.split('||');
+    if(!S.editPagos[clave]) S.editPagos[clave]={};
+    S.editPagos[clave][campo]=inp.value;
+    const c=S.editPagos[clave];
+    const orig={cuota:oCuota,fecha:oFecha,valor:String(oValor)};
+    const igual=['cuota','fecha','valor'].every(k=>c[k]===undefined||String(c[k])===orig[k]);
+    if(igual) delete S.editPagos[clave];
+    render();
+  });
+  const svp=$('#btnSavePagos'); if(svp) svp.onclick=guardarEdicionPagos;
+  const udp=$('#btnUndoPagos'); if(udp) udp.onclick=()=>{ S.editPagos={}; render(); };
   const bi=$('#btnImg'); if(bi) bi.onclick=descargarImagen;
 
   /* íconos de ayuda */
@@ -1848,6 +1880,59 @@ async function borrarPago(clave){
     else bloqFin(false,'No se pudo borrar','Puede que tu Apps Script sea la versión anterior. '+
       'Volvé a pegar el archivo APPS-SCRIPT.gs y publicá una versión nueva.');
   }catch(e){ bloqFin(false,'No se pudo borrar',e.message); }
+  finally{ S.guardando=false; }
+}
+
+/* Corrige jornada, fecha o valor de un pago ya cargado. No hay una columna
+   ID en PAGOS, así que se borra la fila original (por sus valores exactos)
+   y se agrega una nueva con los datos corregidos.                          */
+async function guardarEdicionPagos(){
+  const claves=Object.keys(S.editPagos);
+  if(!claves.length) return;
+  if(S.guardando) return;
+  S.guardando=true;
+  bloqAbrir('Guardando '+claves.length+' pago'+(claves.length>1?'s':'')+'…',
+    'Corrigiendo cada pago en el Sheet. No toques nada hasta que termine.');
+  try{
+    const pedido=claves.map(clave=>{
+      const [equipo,concepto,cuotaOrig,fechaOrig,valorOrig]=clave.split('||');
+      const orig=S.pagos.find(p=>p.equipo===equipo&&p.concepto===concepto&&
+        String(p.cuota)===cuotaOrig&&p.fecha===fechaOrig&&String(p.valor)===valorOrig);
+      const e=S.equipos.find(x=>x.equipo===equipo);
+      const c=S.editPagos[clave];
+      return {
+        equipo, concepto, cuotaOrig, fechaOrig, valorOrig,
+        categoria: e?e.categoria:(orig?orig.categoria:''),
+        obs: orig?orig.obs:'',
+        cuotaNueva: c.cuota!==undefined?c.cuota:cuotaOrig,
+        fechaNueva: c.fecha!==undefined?c.fecha:fechaOrig,
+        valorNueva: c.valor!==undefined?num(c.valor):num(valorOrig)
+      };
+    });
+    for(const p of pedido){
+      await apiPost({action:'borrarFilas',hoja:'PAGOS',filtros:{
+        EQUIPO:p.equipo, CONCEPTO:p.concepto, CUOTA:p.cuotaOrig, FECHA:p.fechaOrig, VALOR:p.valorOrig }});
+      await esperar(900);
+      await apiPost({action:'append',hoja:'PAGOS',
+        rows:[[p.categoria,p.equipo,p.concepto,p.cuotaNueva,p.fechaNueva,p.valorNueva,p.obs]]});
+      await esperar(900);
+    }
+    bloqTexto('Verificando…','Confirmando los cambios en el Sheet.');
+    let faltan=pedido;
+    for(let intento=1;intento<=4&&faltan.length;intento++){
+      await esperar(intento===1?2200:2500);
+      await cargar();
+      faltan=pedido.filter(p=>!S.pagos.some(x=>x.equipo===p.equipo&&x.concepto===p.concepto&&
+        String(x.cuota)===String(p.cuotaNueva)&&x.fecha===p.fechaNueva&&Math.abs(x.valor-p.valorNueva)<0.01));
+      if(faltan.length&&intento<4) bloqTexto('Verificando…','Faltan '+faltan.length+' por confirmar. Reintento '+intento+' de 3.');
+    }
+    S.editPagos={};
+    render();
+    if(faltan.length) bloqFin(false,'No se guardó todo',
+      'Quedaron sin confirmar '+faltan.length+' pago'+(faltan.length>1?'s':'')+'. Revisá la hoja PAGOS.');
+    else bloqFin(true,'Guardado con éxito',
+      pedido.length+' pago'+(pedido.length>1?'s':'')+' actualizado'+(pedido.length>1?'s':'')+' en el Sheet.');
+  }catch(e){ bloqFin(false,'No se pudo guardar',e.message); }
   finally{ S.guardando=false; }
 }
 
