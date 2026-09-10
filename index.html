@@ -706,10 +706,13 @@ function partidosParaCarga(){
 function selPartido(id,sel){
   return '<select id="'+id+'">'+partidosParaCarga().map(x=>{
     const p=x.p;
+    const marca = !p.jugado ? '  ·  sin marcador'
+      : x.falta>0 ? '  ⚠ faltan '+x.falta+' goles'
+      : '  ✓ completo';
     return '<option value="'+esc(p.id)+'"'+(p.id===sel?' selected':'')+'>'+
       esc(p.id)+' · '+p.categoria.replace('GRUPO ','G').replace('FEMENINO','FEM')+' J'+p.jornada+' · '+
       esc(corto(p.local))+(p.jugado?' '+p.gl+'-'+p.gv+' ':' vs ')+esc(corto(p.visita))+
-      (x.falta>0?'  ⚠ faltan '+x.falta+' goles':'')+'</option>';
+      marca+'</option>';
   }).join('')+'</select>';
 }
 function cardRegistroGoles(){
@@ -745,6 +748,21 @@ function cardRegistroGoles(){
       '<div style="flex:0 0 90px"><label>Goles</label><input id="rgGoles" type="number" min="1" value="1"></div>'+
       '<div style="flex:0 0 auto"><button class="btn pri" id="rgAdd">+ Agregar</button></div>'+
     '</div>'+
+    /* lo que este partido YA tiene cargado en el Sheet */
+    (p? (()=>{
+      const ya=S.goles.filter(g=>g.pid===p.id);
+      if(!ya.length) return '<div class="muted" style="font-size:12px;margin-top:12px;padding-top:10px;'+
+        'border-top:1px solid var(--line)">Este partido todavía no tiene ningún goleador cargado.</div>';
+      const porEq=[p.local,p.visita].map(eq=>{
+        const g=ya.filter(x=>x.equipo===eq);
+        if(!g.length) return '';
+        return '<div style="margin-top:6px"><span class="muted" style="font-size:11px">'+esc(corto(eq))+':</span> '+
+          g.map(x=>'<span class="tag v" style="margin:2px">'+esc(x.jugador)+' · '+x.goles+'</span>').join('')+'</div>';
+      }).join('');
+      return '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">'+
+        '<span class="muted" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase">'+
+        'Ya cargado en el Sheet · '+ya.reduce((s,x)=>s+x.goles,0)+' goles</span>'+porEq+'</div>';
+    })() : '')+
     (S.golesNuevos.length? '<div class="tw" style="margin-top:12px"><table><thead><tr>'+
       '<th>Partido</th><th>Equipo</th><th>Jugador</th><th class="n">Goles</th><th></th></tr></thead><tbody>'+
       S.golesNuevos.map((g,i)=>'<tr><td>'+esc(g.pid)+'</td><td>'+esc(corto(g.equipo))+'</td>'+
@@ -761,6 +779,41 @@ function cardRegistroGoles(){
       : '<div class="muted" style="font-size:11.5px;margin-top:10px">Agregá los goleadores del partido y después guardalos todos juntos.</div>')+
     '</div></div>';
 }
+/* Panel de control: qué partidos ya tienen todos sus goleadores y cuáles no */
+function cardEstadoCarga(){
+  const jugados=S.partidos.filter(p=>p.jugado);
+  const faltan=golesSinAsignar();
+  const completos=jugados.length-faltan.length;
+  const golesFaltan=faltan.reduce((s,x)=>s+x.falta,0);
+  const verTodo=S.filtros.gEstadoTodo==='1';
+  const lista=verTodo? faltan : faltan.slice(0,12);
+
+  return '<div class="card noprint" style="margin-bottom:14px"><h2>Control de carga '+
+    '<span class="sub">'+completos+' de '+jugados.length+' partidos con sus goleadores completos</span>'+
+    botonAyuda('apCarga')+'</h2>'+
+    ayuda('apCarga','Compara el marcador de cada partido con los goleadores cargados. Si un partido '+
+      'terminó 5-2, tienen que estar los 7 goles repartidos entre jugadores. Tocá cualquier fila y se '+
+      'carga arriba para completarla.')+
+    (faltan.length
+      ? '<div class="tw"><table><thead><tr><th>Partido</th><th>Cat.</th><th class="n">J</th>'+
+        '<th>Marcador</th><th class="n">Cargados</th><th class="n">Faltan</th></tr></thead><tbody>'+
+        lista.map(x=>'<tr style="cursor:pointer" data-cargar="'+esc(x.p.id)+'" title="Tocá para completar este partido">'+
+          '<td class="b">'+esc(corto(x.p.local))+' <span class="muted">vs</span> '+esc(corto(x.p.visita))+'</td>'+
+          '<td><span class="tag">'+x.p.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>'+
+          '<td class="n">'+esc(x.p.jornada)+'</td>'+
+          '<td class="n">'+x.p.gl+' - '+x.p.gv+'</td>'+
+          '<td class="n">'+x.reg+' de '+x.tot+'</td>'+
+          '<td class="n"><span class="pts">'+x.falta+'</span></td></tr>').join('')+
+        '</tbody></table></div>'+
+        '<div class="pad row">'+
+        (faltan.length>12? '<div style="flex:0 0 auto"><button class="btn sm" id="btnEstadoTodo">'+
+          (verTodo?'Ver solo los primeros 12':'Ver los '+faltan.length+' partidos')+'</button></div>':'')+
+        '<div class="muted" style="font-size:11.5px">Faltan <b>'+golesFaltan+' goles</b> por asignar en '+
+        faltan.length+' partido'+(faltan.length>1?'s':'')+'.</div></div>'
+      : '<div class="pad" style="color:var(--verde)">Todos los partidos jugados tienen sus goleadores completos ✔</div>')+
+    '</div>';
+}
+
 function tabGoleadores(){
   const cat = S.filtros.gcat||'', q = S.filtros.gq||'';
   let L = goleadores(cat||null);
@@ -770,7 +823,7 @@ function tabGoleadores(){
   S.goles.filter(g=>!cat||g.categoria===cat).forEach(g=>porEquipo[g.equipo]=(porEquipo[g.equipo]||0)+g.goles);
   const eqTop = Object.entries(porEquipo).sort((a,b)=>b[1]-a[1]).slice(0,10);
 
-  return cardRegistroGoles()+
+  return cardRegistroGoles()+cardEstadoCarga()+
     '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
     '<div><label>Categoría</label>'+selCat('fGcat',cat,true)+'</div>'+
     '<div><label>Buscar jugador o equipo</label><input id="fGq" value="'+esc(q)+'" placeholder="Ej: ALVAREZ"></div>'+
@@ -778,20 +831,36 @@ function tabGoleadores(){
     '</div></div>'+
     '<div class="grid g3" style="margin-bottom:14px">'+CATS.map(c=>
       '<div class="stat"><div class="n">'+totCat(c)+'</div><div class="l">Goles registrados · '+c+'</div></div>').join('')+'</div>'+
-    '<div class="grid g2">'+
-    '<div class="card"><h2>Tabla de goleadores <span class="sub">'+L.length+' jugadores</span></h2>'+
-      '<div class="tw"><table><thead><tr><th class="pos">#</th><th>Jugador</th><th>Equipo</th>'+
-      (cat?'':'<th>Cat.</th>')+'<th class="n">PJ</th><th class="n">Goles</th></tr></thead><tbody>'+
-      (L.length? L.map((g,i)=>'<tr><td class="pos">'+(i+1)+'</td><td class="b">'+esc(g.jugador)+'</td>'+
-        '<td>'+esc(corto(g.equipo))+'</td>'+(cat?'':'<td><span class="tag">'+g.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>')+
-        '<td class="n">'+g.pj+'</td><td class="n"><span class="pts">'+g.goles+'</span></td></tr>').join('')
-        : '<tr><td colspan="6" class="muted" style="padding:14px">Sin registros</td></tr>')+
-      '</tbody></table></div></div>'+
-    '<div class="card"><h2>Goles por equipo</h2><div class="tw"><table><thead><tr>'+
+    /* Hombres y femenino van en tablas separadas: son premios distintos.
+       Si se filtra una categoría puntual, se muestra solo esa.               */
+    (cat
+      ? tablaGoleadores(cat,L,cat)
+      : '<div class="grid g2">'+
+          tablaGoleadores('Hombres',L.filter(g=>g.categoria!=='FEMENINO'),'HOMBRES')+
+          tablaGoleadores('Femenino',L.filter(g=>g.categoria==='FEMENINO'),'FEMENINO')+
+        '</div>')+
+    '<div class="card" style="margin-top:14px"><h2>Goles por equipo</h2><div class="tw"><table><thead><tr>'+
       '<th class="pos">#</th><th>Equipo</th><th class="n">Goles con goleador</th></tr></thead><tbody>'+
       eqTop.map((e,i)=>'<tr><td class="pos">'+(i+1)+'</td><td class="b">'+esc(corto(e[0]))+'</td>'+
       '<td class="n"><span class="pts">'+e[1]+'</span></td></tr>').join('')+
-      '</tbody></table></div></div></div>';
+      '</tbody></table></div></div>';
+}
+
+/* Una tabla de goleadores con su botón de imagen */
+function tablaGoleadores(titulo,L,clave){
+  const mostrarCat = clave==='HOMBRES';
+  return '<div class="card"><h2>Goleadores · '+esc(titulo)+
+    ' <span class="sub">'+L.length+' jugador'+(L.length===1?'':'es')+'</span>'+
+    (L.length?'<button class="btn sm amb noprint" data-imggol="'+esc(clave)+'" style="margin-left:auto">🖼 Imagen</button>':'')+
+    '</h2>'+
+    '<div class="tw"><table><thead><tr><th class="pos">#</th><th>Jugador</th><th>Equipo</th>'+
+    (mostrarCat?'<th>Gr.</th>':'')+'<th class="n">PJ</th><th class="n">Goles</th></tr></thead><tbody>'+
+    (L.length? L.map((g,i)=>'<tr><td class="pos">'+(i+1)+'</td><td class="b">'+esc(g.jugador)+'</td>'+
+      '<td>'+esc(corto(g.equipo))+'</td>'+
+      (mostrarCat?'<td><span class="tag">'+g.categoria.replace('GRUPO ','')+'</span></td>':'')+
+      '<td class="n">'+g.pj+'</td><td class="n"><span class="pts">'+g.goles+'</span></td></tr>').join('')
+      : '<tr><td colspan="6" class="muted" style="padding:14px">Sin registros</td></tr>')+
+    '</tbody></table></div></div>';
 }
 
 /* ---------- suspensiones ---------- */
@@ -1359,6 +1428,11 @@ function enlazar(){
   const gs=$('#rgSave'); if(gs) gs.onclick=rgGuardar;
   const gc2=$('#rgCopy'); if(gc2) gc2.onclick=()=>copiar(rgFilas().map(f=>f.join('\t')).join('\n'));
   const gcl=$('#rgClear'); if(gcl) gcl.onclick=()=>{ S.golesNuevos=[]; render(); };
+  document.querySelectorAll('[data-cargar]').forEach(tr=>tr.onclick=()=>{
+    S.filtros.rgPartido=tr.dataset.cargar; S.filtros.rgLado='L'; render();
+    const el=$('#rgJugador'); if(el){ el.scrollIntoView({behavior:'smooth',block:'center'}); el.focus(); }
+  });
+  const et=$('#btnEstadoTodo'); if(et) et.onclick=()=>{ S.filtros.gEstadoTodo=S.filtros.gEstadoTodo==='1'?'':'1'; render(); };
   document.querySelectorAll('[data-delgol]').forEach(b=>b.onclick=()=>{
     S.golesNuevos.splice(+b.dataset.delgol,1); render(); });
 
@@ -1385,6 +1459,7 @@ function enlazar(){
     b.classList.toggle('on',!p.hidden);
   });
   document.querySelectorAll('[data-imgpos]').forEach(b=>b.onclick=()=>imagenPosiciones(b.dataset.imgpos));
+  document.querySelectorAll('[data-imggol]').forEach(b=>b.onclick=()=>imagenGoleadores(b.dataset.imggol));
 }
 
 /* ---------- acciones planificador ---------- */
@@ -1768,6 +1843,56 @@ function descargarImagen(){
           y+=HP;
         });
         y+=8;
+      });
+      x.textBaseline='alphabetic';
+    }
+  });
+}
+
+/* ---------- imagen de la tabla de goleadores ---------- */
+function imagenGoleadores(clave){
+  const L = clave==='HOMBRES' ? goleadores(null).filter(g=>g.categoria!=='FEMENINO')
+          : clave==='FEMENINO' ? goleadores('FEMENINO')
+          : goleadores(clave);
+  if(!L.length){ toast('No hay goleadores para exportar'); return; }
+  const top=L.slice(0,20), P=40, HF=62;
+  const titulo = clave==='HOMBRES'?'Hombres' : clave==='FEMENINO'?'Femenino' : clave;
+  const alto = 208 + 54 + top.length*HF + 20;
+
+  exportarPNG({
+    alto, nombre:'goleadores-'+titulo.toLowerCase().replace(/ /g,'-')+'.png', sinPie:true,
+    sub:'Goleadores · '+titulo+(L.length>top.length?'  ·  top 20':''),
+    dibujar:(x,W,y0)=>{
+      const ancho=W-P*2;
+      let y=y0-12;
+      /* encabezado */
+      x.fillStyle='#1b211c'; rr(x,P,y,ancho,50,12);
+      x.fillStyle='#8fa093'; x.font=FC(22,600); x.textBaseline='middle';
+      x.textAlign='left'; x.fillText('JUGADOR',P+70,y+25);
+      x.textAlign='right'; x.fillText('EQUIPO',ancho-110,y+25);
+      x.fillStyle='#f5a623'; x.textAlign='center'; x.fillText('GOLES',W-P-52,y+25);
+      y+=54;
+
+      top.forEach((g,i)=>{
+        const podio=i<3;
+        x.fillStyle=podio?'#16211a':'#161c17'; rr(x,P,y,ancho,54,10);
+        if(podio){ x.fillStyle='#35c25f'; rr(x,P,y+10,5,34,3); }
+        const cy=y+27;
+        /* puesto */
+        x.textAlign='center'; x.font=FC(28,700);
+        x.fillStyle=podio?'#35c25f':'#6d7a70';
+        x.fillText(String(i+1),P+36,cy+1);
+        /* jugador */
+        x.textAlign='left'; x.font=FSS(24,700); x.fillStyle='#fff';
+        x.fillText(g.jugador,P+70,cy);
+        /* equipo */
+        x.textAlign='right'; x.font=FSS(19,500); x.fillStyle='#8fa093';
+        x.fillText(corto(g.equipo),ancho-110,cy);
+        /* goles en pastilla */
+        x.fillStyle='#f5a623'; rr(x,W-P-84,cy-20,64,40,20);
+        x.fillStyle='#241500'; x.font=FC(28,700); x.textAlign='center';
+        x.fillText(String(g.goles),W-P-52,cy+1);
+        y+=HF;
       });
       x.textBaseline='alphabetic';
     }
