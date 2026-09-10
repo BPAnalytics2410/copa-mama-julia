@@ -814,6 +814,29 @@ function cardEstadoCarga(){
     '</div>';
 }
 
+/* Avisa de nombres que parecen el mismo jugador escrito distinto */
+function cardNombresParecidos(){
+  const pares=nombresParecidos();
+  if(!pares.length) return '';
+  const golesDe=(eq,jug)=>S.goles.filter(g=>g.equipo===eq&&clave(g.jugador)===clave(jug))
+    .reduce((s,g)=>s+g.goles,0);
+  return '<div class="card noprint" style="margin-bottom:14px"><h2>⚠ Nombres parecidos '+
+    '<span class="sub">'+pares.length+' por revisar</span>'+botonAyuda('apDup')+'</h2>'+
+    ayuda('apDup','Al cargar, la página ya te avisa si un nombre se parece a uno que existe. '+
+      'Estos son los que <b>ya estaban cargados</b> de antes. Si son la misma persona, se arregla en '+
+      'la hoja <code>GOLES</code> del Sheet: seleccioná la columna JUGADOR y usá '+
+      '<b>Editar → Buscar y reemplazar</b> para dejar un solo nombre. Si son dos jugadores distintos '+
+      '(hermanos, por ejemplo), no toques nada.')+
+    '<div class="tw"><table><thead><tr><th>Equipo</th><th>Un nombre</th><th class="n">Goles</th>'+
+    '<th>El otro</th><th class="n">Goles</th></tr></thead><tbody>'+
+    pares.map(x=>'<tr><td><span class="tag">'+esc(corto(x.equipo))+'</span></td>'+
+      '<td class="b">'+esc(x.a)+'</td><td class="n">'+golesDe(x.equipo,x.a)+'</td>'+
+      '<td class="b">'+esc(x.b)+'</td><td class="n">'+golesDe(x.equipo,x.b)+'</td></tr>').join('')+
+    '</tbody></table></div>'+
+    '<div class="pad muted" style="font-size:11.5px">Si son la misma persona, unificá el nombre en la '+
+    'hoja <code>GOLES</code> y la tabla se recalcula sola. Si son distintos, dejalo así.</div></div>';
+}
+
 function tabGoleadores(){
   const cat = S.filtros.gcat||'', q = S.filtros.gq||'';
   let L = goleadores(cat||null);
@@ -823,7 +846,7 @@ function tabGoleadores(){
   S.goles.filter(g=>!cat||g.categoria===cat).forEach(g=>porEquipo[g.equipo]=(porEquipo[g.equipo]||0)+g.goles);
   const eqTop = Object.entries(porEquipo).sort((a,b)=>b[1]-a[1]).slice(0,10);
 
-  return cardRegistroGoles()+cardEstadoCarga()+
+  return cardRegistroGoles()+cardEstadoCarga()+cardNombresParecidos()+
     '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
     '<div><label>Categoría</label>'+selCat('fGcat',cat,true)+'</div>'+
     '<div><label>Buscar jugador o equipo</label><input id="fGq" value="'+esc(q)+'" placeholder="Ej: ALVAREZ"></div>'+
