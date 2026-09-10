@@ -503,19 +503,20 @@ function distancia(a,b){                       /* Levenshtein simple, para detec
     m[i][j]=Math.min(m[i-1][j]+1,m[i][j-1]+1,m[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
   return m[a.length][b.length];
 }
-/* Todos los jugadores conocidos de un equipo, con su clave */
-function planteles(equipo){
+/* Todos los jugadores conocidos de un equipo, con su clave.
+   fuente: 'GOLES' o 'TARJETAS' para mirar una sola hoja; vacío = las dos.   */
+function planteles(equipo,fuente){
   const M={};
   const add=(j)=>{ const k=clave(j); if(!k) return;
     if(!M[k]) M[k]={clave:k,nombre:j,usos:0}; M[k].usos++; };
-  S.goles.filter(g=>!equipo||g.equipo===equipo).forEach(g=>add(g.jugador));
-  S.tarjetas.filter(t=>!equipo||t.equipo===equipo).forEach(t=>add(t.jugador));
+  if(fuente!=='TARJETAS') S.goles.filter(g=>!equipo||g.equipo===equipo).forEach(g=>add(g.jugador));
+  if(fuente!=='GOLES') S.tarjetas.filter(t=>!equipo||t.equipo===equipo).forEach(t=>add(t.jugador));
   return M;
 }
 /* Devuelve el nombre oficial si ya existe, o un parecido para preguntar */
-function resolverJugador(equipo,escrito){
+function resolverJugador(equipo,escrito,fuente){
   const k=clave(escrito);
-  const M=planteles(equipo);
+  const M=planteles(equipo,fuente);
   if(M[k]) return {nombre:M[k].nombre,exacto:true};
   const ko=claveOrden(escrito);
   const lista=Object.values(M);
@@ -692,8 +693,8 @@ function tabPosiciones(){
 
 /* ---------- registro de goleadores ---------- */
 /* nombres oficiales del equipo, sin repetidos por tildes ni mayúsculas */
-function jugadoresDe(equipo){
-  return Object.values(planteles(equipo)).map(p=>p.nombre).sort();
+function jugadoresDe(equipo,fuente){
+  return Object.values(planteles(equipo,fuente)).map(p=>p.nombre).sort();
 }
 /* partidos ordenados para cargar datos: primero los que tienen goles sin asignar */
 function partidosParaCarga(){
@@ -703,8 +704,15 @@ function partidosParaCarga(){
     (falta[b.id]||0)-(falta[a.id]||0) || (b.jornada||0)-(a.jornada||0) || String(b.id).localeCompare(a.id))
     .map(p=>({p,falta:falta[p.id]||0}));
 }
-function selPartido(id,sel){
-  return '<select id="'+id+'">'+partidosParaCarga().map(x=>{
+/* soloFaltan: deja solo los partidos a los que les faltan goleadores, para no
+   tener que bajar por una lista de 60 que ya están completos.                */
+function selPartido(id,sel,soloFaltan){
+  let lista=partidosParaCarga();
+  if(soloFaltan && S.filtros.rgTodos!=='1'){
+    const f=lista.filter(x=>x.falta>0||x.p.id===sel);
+    if(f.length) lista=f;
+  }
+  return '<select id="'+id+'">'+lista.map(x=>{
     const p=x.p;
     const marca = !p.jugado ? '  ·  sin marcador'
       : x.falta>0 ? '  ⚠ faltan '+x.falta+' goles'
@@ -728,7 +736,10 @@ function cardRegistroGoles(){
     (hayAPI()?' <span class="tag v">conectado al Sheet</span>':' <span class="tag a">modo copiar y pegar</span>')+'</h2>'+
     '<div class="pad">'+
     '<div class="row" style="margin-bottom:10px">'+
-      '<div style="flex:2 1 320px"><label>Partido</label>'+selPartido('rgPartido',sel)+'</div>'+
+      '<div style="flex:2 1 320px"><label>Partido'+
+        ' <button class="btn sm gh noprint" id="rgTodos" style="padding:1px 7px;font-size:11px;margin-left:6px">'+
+        (S.filtros.rgTodos==='1'?'solo los que faltan':'ver todos')+'</button></label>'+
+        selPartido('rgPartido',sel,true)+'</div>'+
       '<div style="flex:0 0 130px"><label>Equipo</label><select id="rgLado">'+
         '<option value="L"'+(lado==='L'?' selected':'')+'>Local</option>'+
         '<option value="V"'+(lado==='V'?' selected':'')+'>Visita</option></select></div>'+
@@ -744,7 +755,7 @@ function cardRegistroGoles(){
     '<div class="row">'+
       '<div style="flex:2 1 240px"><label>Jugador</label>'+
         '<input id="rgJugador" list="rgLista" placeholder="Nombre y apellido" autocomplete="off">'+
-        '<datalist id="rgLista">'+jugadoresDe(equipo).map(j=>'<option value="'+esc(j)+'">').join('')+'</datalist></div>'+
+        '<datalist id="rgLista">'+jugadoresDe(equipo,'GOLES').map(j=>'<option value="'+esc(j)+'">').join('')+'</datalist></div>'+
       '<div style="flex:0 0 90px"><label>Goles</label><input id="rgGoles" type="number" min="1" value="1"></div>'+
       '<div style="flex:0 0 auto"><button class="btn pri" id="rgAdd">+ Agregar</button></div>'+
     '</div>'+
@@ -815,26 +826,37 @@ function cardEstadoCarga(){
 }
 
 /* Avisa de nombres que parecen el mismo jugador escrito distinto */
-function cardNombresParecidos(){
-  const pares=nombresParecidos();
+function cardNombresParecidos(fuente){
+  const pares=nombresParecidos(fuente);
   if(!pares.length) return '';
-  const golesDe=(eq,jug)=>S.goles.filter(g=>g.equipo===eq&&clave(g.jugador)===clave(jug))
-    .reduce((s,g)=>s+g.goles,0);
+  /* Dice qué tiene registrado ese nombre y EN QUÉ HOJA está, que es lo que
+     hace falta saber para ir a corregirlo.                                   */
+  const ficha=(eq,jug)=>{
+    const k=clave(jug);
+    const g=S.goles.filter(x=>x.equipo===eq&&clave(x.jugador)===k).reduce((s,x)=>s+x.goles,0);
+    const t=S.tarjetas.filter(x=>x.equipo===eq&&clave(x.jugador)===k);
+    const am=t.reduce((s,x)=>s+x.am,0), ro=t.reduce((s,x)=>s+x.ro,0);
+    const datos=[]; if(g) datos.push(g+(g>1?' goles':' gol'));
+    if(am) datos.push(am+' 🟨'); if(ro) datos.push(ro+' 🟥');
+    const hojas=[]; if(g) hojas.push('GOLES'); if(t.length) hojas.push('TARJETAS');
+    return '<div class="b">'+esc(jug)+'</div>'+
+      '<div class="muted" style="font-size:11px">'+(datos.join(' · ')||'sin registros')+
+      (hojas.length? ' · en <code>'+hojas.join('</code> + <code>')+'</code>' : '')+'</div>';
+  };
   return '<div class="card noprint" style="margin-bottom:14px"><h2>⚠ Nombres parecidos '+
     '<span class="sub">'+pares.length+' por revisar</span>'+botonAyuda('apDup')+'</h2>'+
     ayuda('apDup','Al cargar, la página ya te avisa si un nombre se parece a uno que existe. '+
-      'Estos son los que <b>ya estaban cargados</b> de antes. Si son la misma persona, se arregla en '+
-      'la hoja <code>GOLES</code> del Sheet: seleccioná la columna JUGADOR y usá '+
-      '<b>Editar → Buscar y reemplazar</b> para dejar un solo nombre. Si son dos jugadores distintos '+
-      '(hermanos, por ejemplo), no toques nada.')+
-    '<div class="tw"><table><thead><tr><th>Equipo</th><th>Un nombre</th><th class="n">Goles</th>'+
-    '<th>El otro</th><th class="n">Goles</th></tr></thead><tbody>'+
+      'Estos son los que <b>ya estaban cargados</b> de antes, y la mayoría vienen de la planilla de '+
+      'tarjetas del Excel viejo. Debajo de cada nombre dice <b>en qué hoja está</b>. Si son la misma '+
+      'persona: abrí esa hoja, seleccioná la columna <b>JUGADOR</b> y usá <b>Editar → Buscar y '+
+      'reemplazar</b>. Si son dos jugadores distintos (hermanos, por ejemplo), no toques nada.')+
+    '<div class="tw"><table><thead><tr><th>Equipo</th><th>Un nombre</th><th>El otro</th>'+
+    '</tr></thead><tbody>'+
     pares.map(x=>'<tr><td><span class="tag">'+esc(corto(x.equipo))+'</span></td>'+
-      '<td class="b">'+esc(x.a)+'</td><td class="n">'+golesDe(x.equipo,x.a)+'</td>'+
-      '<td class="b">'+esc(x.b)+'</td><td class="n">'+golesDe(x.equipo,x.b)+'</td></tr>').join('')+
+      '<td>'+ficha(x.equipo,x.a)+'</td><td>'+ficha(x.equipo,x.b)+'</td></tr>').join('')+
     '</tbody></table></div>'+
-    '<div class="pad muted" style="font-size:11.5px">Si son la misma persona, unificá el nombre en la '+
-    'hoja <code>GOLES</code> y la tabla se recalcula sola. Si son distintos, dejalo así.</div></div>';
+    '<div class="pad muted" style="font-size:11.5px">Corregí el nombre en la hoja que se indica y la '+
+    'tabla se recalcula sola. Si son jugadores distintos, dejalo así.</div></div>';
 }
 
 function tabGoleadores(){
@@ -846,7 +868,7 @@ function tabGoleadores(){
   S.goles.filter(g=>!cat||g.categoria===cat).forEach(g=>porEquipo[g.equipo]=(porEquipo[g.equipo]||0)+g.goles);
   const eqTop = Object.entries(porEquipo).sort((a,b)=>b[1]-a[1]).slice(0,10);
 
-  return cardRegistroGoles()+cardEstadoCarga()+cardNombresParecidos()+
+  return cardRegistroGoles()+cardEstadoCarga()+cardNombresParecidos('GOLES')+
     '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
     '<div><label>Categoría</label>'+selCat('fGcat',cat,true)+'</div>'+
     '<div><label>Buscar jugador o equipo</label><input id="fGq" value="'+esc(q)+'" placeholder="Ej: ALVAREZ"></div>'+
@@ -931,7 +953,7 @@ function cardRegistroTarjetas(){
     '<div class="row">'+
       '<div style="flex:2 1 220px"><label>Jugador</label>'+
         '<input id="rtJugador" list="rtLista" placeholder="Nombre y apellido" autocomplete="off">'+
-        '<datalist id="rtLista">'+jugadoresDe(equipo).map(j=>'<option value="'+esc(j)+'">').join('')+'</datalist></div>'+
+        '<datalist id="rtLista">'+jugadoresDe(equipo,'TARJETAS').map(j=>'<option value="'+esc(j)+'">').join('')+'</datalist></div>'+
       '<div style="flex:0 0 100px"><label>🟨 Amar.</label><input id="rtAm" type="number" min="0" max="2" value="1"></div>'+
       '<div style="flex:0 0 100px"><label>🟥 Rojas</label><input id="rtRo" type="number" min="0" max="1" value="0"></div>'+
       '<div style="flex:0 0 auto"><button class="btn pri" id="rtAdd">+ Agregar</button></div>'+
@@ -965,7 +987,7 @@ function tabTarjetas(){
   const alBorde=L.filter(t=>t.am===N-1).length;
   const partSusp=S.partidos.filter(p=>p.estado==='SUSPENDIDO'&&(!cat||p.categoria===cat));
 
-  return cardRegistroTarjetas()+
+  return cardRegistroTarjetas()+cardNombresParecidos('TARJETAS')+
     '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
     '<div><label>Categoría</label>'+selCat('fTcat',cat,true)+'</div>'+
     '<div style="flex:0 0 auto"><button class="btn" onclick="window.print()">🖨 Imprimir</button></div></div></div>'+
@@ -1323,10 +1345,10 @@ function tabPagos(){
 
 /* ---------- DATOS / SALUD ---------- */
 /* Busca dos nombres distintos, del mismo equipo, que parecen la misma persona */
-function nombresParecidos(){
+function nombresParecidos(fuente){
   const out=[], vistos={};
   S.equipos.forEach(e=>{
-    const nombres=jugadoresDe(e.equipo);
+    const nombres=jugadoresDe(e.equipo,fuente);
     for(let i=0;i<nombres.length;i++) for(let j=i+1;j<nombres.length;j++){
       const a=nombres[i], b=nombres[j];
       const igualOrden = claveOrden(a)===claveOrden(b);
@@ -1446,6 +1468,7 @@ function enlazar(){
 
   /* registro de goleadores */
   bindFiltro('#rgPartido','rgPartido'); bindFiltro('#rgLado','rgLado');
+  const rt=$('#rgTodos'); if(rt) rt.onclick=()=>{ S.filtros.rgTodos=S.filtros.rgTodos==='1'?'':'1'; render(); };
   const ga=$('#rgAdd'); if(ga) ga.onclick=rgAgregar;
   const gj=$('#rgJugador'); if(gj) gj.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); rgAgregar(); } };
   const gs=$('#rgSave'); if(gs) gs.onclick=rgGuardar;
@@ -1552,8 +1575,8 @@ function copiar(txt){
 /* ---------- registro de goles / tarjetas ---------- */
 /* Evita que el mismo jugador quede cargado dos veces con distinta escritura.
    Si ya existe, usa el nombre oficial. Si se parece a uno, pregunta.         */
-function nombreConfirmado(equipo,escrito){
-  const r=resolverJugador(equipo,escrito);
+function nombreConfirmado(equipo,escrito,fuente){
+  const r=resolverJugador(equipo,escrito,fuente);
   if(r.exacto) return r.nombre;
   if(r.parecido){
     if(confirm('¿Es "'+r.parecido+'"?\n\nEscribiste "'+up(escrito)+'".\n\n'+
@@ -1569,7 +1592,7 @@ function rgAgregar(){
   const escrito=$('#rgJugador').value, n=num($('#rgGoles').value);
   if(!clave(escrito)){ toast('Escribí el nombre del jugador'); return; }
   if(n<1){ toast('Los goles tienen que ser 1 o más'); return; }
-  const jug=nombreConfirmado(equipo,escrito);
+  const jug=nombreConfirmado(equipo,escrito,'GOLES');
   if(!jug) return;
   const y=S.golesNuevos.find(g=>g.pid===p.id&&g.equipo===equipo&&clave(g.jugador)===clave(jug));
   if(y) y.goles+=n;
@@ -1590,7 +1613,7 @@ function rtAgregar(){
   const escrito=$('#rtJugador').value, am=num($('#rtAm').value), ro=num($('#rtRo').value);
   if(!clave(escrito)){ toast('Escribí el nombre del jugador'); return; }
   if(am<1&&ro<1){ toast('Poné al menos una amarilla o una roja'); return; }
-  const jug=nombreConfirmado(equipo,escrito);
+  const jug=nombreConfirmado(equipo,escrito,'TARJETAS');
   if(!jug) return;
   S.tarjNuevas.push({pid:p.id,categoria:p.categoria,jornada:p.jornada,equipo,jugador:jug,am,ro,
     sancion:ro>0?'PENDIENTE':''});
