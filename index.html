@@ -169,6 +169,19 @@ tr.clasif .pos{color:var(--verde);font-weight:700}
   box-shadow:0 20px 60px rgba(0,0,0,.6);max-height:88vh;overflow:auto}
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--verde);color:#04170a;
   font-weight:700;padding:11px 20px;border-radius:999px;z-index:100;box-shadow:var(--sh);font-size:13px}
+/* pantalla que bloquea todo mientras se guarda en el Sheet */
+.bloq{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.8);display:grid;place-items:center;padding:20px}
+.bloq .box{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:28px 32px;
+  text-align:center;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.65)}
+.bloq .sp{width:46px;height:46px;margin:0 auto 18px;border:4px solid var(--line);
+  border-top-color:var(--verde);border-radius:50%;animation:gira .8s linear infinite}
+@keyframes gira{to{transform:rotate(360deg)}}
+.bloq .ic{font-size:46px;line-height:1;margin-bottom:12px}
+.bloq h3{font-size:22px;color:var(--white);margin-bottom:8px}
+.bloq p{margin:0;font-size:13px;color:var(--muted);line-height:1.5}
+.bloq.ok h3{color:var(--verde)}
+.bloq.err h3{color:#ff8b83}
+.bloq .btn{margin-top:18px}
 .warn{background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.35);border-radius:10px;padding:10px 13px;font-size:12.5px}
 .warn b{color:var(--ambar)}
 .iq{margin-left:auto;flex:0 0 auto;width:22px;height:22px;border-radius:50%;border:1px solid var(--line);
@@ -260,7 +273,7 @@ const LS_DRAFT = 'cmj_borrador';
 const S = {
   cfg:{}, equipos:[], partidos:[], goles:[], tarjetas:[], pagos:[],
   origen:'', tab:'resumen', borrador:[], filtros:{},
-  golesNuevos:[], tarjNuevas:[], editPartidos:{}, guardando:false
+  golesNuevos:[], tarjNuevas:[], pagosNuevos:[], editPartidos:{}, guardando:false
 };
 
 /* ---------- utils ---------- */
@@ -290,6 +303,41 @@ const has = v => v!==''&&v!=null&&String(v).trim()!=='';
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(msg){ const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
   document.body.appendChild(t); setTimeout(()=>t.remove(),2300); }
+
+/* ---------- pantalla de "guardando" que bloquea la página ----------
+   Mientras se escribe en el Sheet no se puede tocar nada más, y al final
+   avisa si salió bien o si falló.                                          */
+let _bloq=null;
+function bloqCaja(){ return _bloq? _bloq.querySelector('.box') : null; }
+function bloqAbrir(titulo,sub){
+  bloqCerrar();
+  _bloq=document.createElement('div');
+  _bloq.className='bloq';
+  _bloq.innerHTML='<div class="box"><div class="sp"></div><h3></h3><p></p></div>';
+  document.body.appendChild(_bloq);
+  bloqTexto(titulo,sub||'No cierres la página ni toques nada hasta que termine.');
+}
+function bloqTexto(titulo,sub){
+  const b=bloqCaja(); if(!b) return;
+  b.querySelector('h3').textContent=titulo;
+  b.querySelector('p').textContent=sub||'';
+}
+function bloqFin(ok,titulo,sub){
+  if(!_bloq){ toast(titulo); return; }
+  _bloq.className='bloq '+(ok?'ok':'err');
+  const b=bloqCaja();
+  b.innerHTML='<div class="ic">'+(ok?'✅':'⚠️')+'</div><h3>'+esc(titulo)+'</h3>'+
+    '<p>'+esc(sub||'')+'</p>'+(ok?'':'<button class="btn pri" id="bloqOk">Entendido</button>');
+  if(ok){
+    const cerrar=()=>bloqCerrar();
+    _bloq.onclick=cerrar;
+    setTimeout(cerrar,2400);
+  } else {
+    const btn=b.querySelector('#bloqOk');
+    if(btn) btn.onclick=()=>bloqCerrar();
+  }
+}
+function bloqCerrar(){ if(_bloq){ _bloq.remove(); _bloq=null; } }
 function fechaTxt(f){
   if(!has(f)) return '';
   const m = String(f).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -376,17 +424,26 @@ const esperar = ms => new Promise(r=>setTimeout(r,ms));
 async function guardarEnSheet(hoja,rows,verificar,etiqueta){
   if(S.guardando) return false;
   S.guardando=true;
+  bloqAbrir('Guardando en el Sheet…',
+    rows.length+' fila'+(rows.length>1?'s':'')+' en la hoja '+hoja+'. No toques nada hasta que termine.');
   try{
-    toast('Guardando en el Sheet…');
     await apiPost({action:'append',hoja,rows});
-    await esperar(2600);
-    await cargar();
-    const ok = verificar();
+    bloqTexto('Verificando…','Estoy releyendo el Sheet para confirmar que llegó todo.');
+    let ok=false;
+    for(let intento=1;intento<=4&&!ok;intento++){
+      await esperar(intento===1?2400:2500);
+      await cargar();
+      ok=verificar();
+      if(!ok&&intento<4) bloqTexto('Verificando…','El Sheet todavía no lo refleja. Reintento '+intento+' de 3.');
+    }
     render();
-    toast(ok? (etiqueta||'Guardado')+' ✔' : 'No aparece en el Sheet — revisá la URL y el token');
+    if(ok) bloqFin(true,(etiqueta||'Guardado')+' con éxito',
+      rows.length+' fila'+(rows.length>1?'s':'')+' quedaron en la hoja '+hoja+'.');
+    else bloqFin(false,'No se guardó',
+      'Las filas no aparecen en el Sheet. Volvé a intentar; si sigue igual, revisá que el Apps Script siga publicado.');
     return ok;
   }catch(e){
-    toast(e.message);
+    bloqFin(false,'No se pudo guardar',e.message);
     return false;
   }finally{ S.guardando=false; }
 }
@@ -453,7 +510,10 @@ function normalizar(){
     am:num(t.AMARILLAS), ro:num(t.ROJAS), sancion:up(t.SANCION) }));
   S.pagos = S.pagos.filter(p=>has(p.EQUIPO)).map(p=>({
     categoria:cat(p.CATEGORIA), equipo:up(p.EQUIPO), concepto:up(p.CONCEPTO)||'OTRO',
-    cuota:p.CUOTA||'', fecha:fechaISO(p.FECHA), valor:num(p.VALOR), obs:p.OBS||'' }));
+    /* La 4ª columna de PAGOS se usa como jornada. Sirve igual si el encabezado
+       del Sheet dice CUOTA (como vino del Excel) o si lo renombrás a JORNADA. */
+    cuota:String(p.JORNADA!==undefined&&p.JORNADA!==''?p.JORNADA:(p.CUOTA||'')).trim(),
+    fecha:fechaISO(p.FECHA), valor:num(p.VALOR), obs:p.OBS||'' }));
 }
 
 /* ---------- cálculo ---------- */
@@ -1289,6 +1349,89 @@ const valorInscripcion = cat => num(cat==='FEMENINO'
   ? (S.cfg.VALOR_INSCRIPCION_FEMENINO!==undefined?S.cfg.VALOR_INSCRIPCION_FEMENINO:S.cfg.VALOR_INSCRIPCION)
   : (S.cfg.VALOR_INSCRIPCION_HOMBRES!==undefined?S.cfg.VALOR_INSCRIPCION_HOMBRES:S.cfg.VALOR_INSCRIPCION));
 
+/* ---------- registrar un pago ---------- */
+const CONCEPTOS=['INSCRIPCION','ARBITRAJE','ARBITRAJE ADEUDADO','MULTA','OTRO'];
+function cardRegistroPago(){
+  const eq=S.filtros.rpEquipo||(S.equipos[0]||{}).equipo||'';
+  const con=S.filtros.rpConcepto||'INSCRIPCION';
+  const hoy=new Date().toISOString().slice(0,10);
+  return '<div class="card noprint" style="margin-bottom:14px"><h2>➕ Registrar pago'+
+    (hayAPI()?' <span class="tag v">conectado al Sheet</span>':' <span class="tag a">modo copiar y pegar</span>')+
+    botonAyuda('apPago')+'</h2>'+
+    ayuda('apPago','Cada cobro es una fila: se van sumando y el saldo se calcula solo. '+
+      'La <b>jornada</b> es en qué fecha del campeonato te pagaron. '+
+      '<b>ARBITRAJE ADEUDADO</b> es lo que el equipo te debe de arbitraje, no lo que pagó.')+
+    '<div class="pad">'+
+    '<div class="row" style="margin-bottom:10px">'+
+      '<div style="flex:2 1 240px"><label>Equipo</label><select id="rpEquipo">'+
+        CATS.map(c=>'<optgroup label="'+c+'">'+equiposDe(c).map(e=>
+          '<option value="'+esc(e)+'"'+(e===eq?' selected':'')+'>'+esc(corto(e))+'</option>').join('')+'</optgroup>').join('')+
+        '</select></div>'+
+      '<div><label>Concepto</label><select id="rpConcepto">'+
+        CONCEPTOS.map(c=>'<option'+(c===con?' selected':'')+'>'+c+'</option>').join('')+'</select></div>'+
+    '</div>'+
+    '<div class="row">'+
+      '<div style="flex:0 0 100px"><label>Jornada</label><input id="rpJornada" type="number" min="1" placeholder="—"></div>'+
+      '<div><label>Fecha</label><input id="rpFecha" type="date" value="'+hoy+'"></div>'+
+      '<div style="flex:0 0 120px"><label>Valor $</label><input id="rpValor" type="number" min="0" step="0.5"></div>'+
+      '<div><label>Observación</label><input id="rpObs" placeholder="opcional"></div>'+
+      '<div style="flex:0 0 auto"><button class="btn pri" id="rpAdd">+ Agregar</button></div>'+
+    '</div>'+
+    (S.pagosNuevos.length? '<div class="tw" style="margin-top:12px"><table><thead><tr>'+
+      '<th>Equipo</th><th>Concepto</th><th class="n">J</th><th>Fecha</th><th class="n">Valor</th><th></th>'+
+      '</tr></thead><tbody>'+
+      S.pagosNuevos.map((p,i)=>'<tr><td class="b">'+esc(corto(p.equipo))+'</td><td>'+esc(p.concepto)+'</td>'+
+        '<td class="n">'+esc(p.cuota||'—')+'</td><td>'+esc(p.fecha)+'</td>'+
+        '<td class="n">$'+p.valor.toFixed(2)+'</td>'+
+        '<td class="n"><button class="btn sm" data-delpago="'+i+'">✕</button></td></tr>').join('')+
+      '</tbody></table></div>'+
+      '<div class="row" style="margin-top:12px">'+
+        (hayAPI()?'<div style="flex:0 0 auto"><button class="btn pri" id="rpSave">💾 Guardar en el Sheet</button></div>':
+          '<div style="flex:0 0 auto"><button class="btn pri" id="rpCopy">📋 Copiar filas</button></div>')+
+        '<div style="flex:0 0 auto"><button class="btn" id="rpClear">🗑 Vaciar</button></div>'+
+        '<div class="muted" style="font-size:11.5px">Total a registrar: <b>$'+
+          S.pagosNuevos.reduce((s,p)=>s+p.valor,0).toFixed(2)+'</b></div>'+
+      '</div>':'')+
+    '</div></div>';
+}
+
+/* ---------- detalle de un equipo, con foto para mandarle ---------- */
+function cardDetallePago(equipo){
+  if(!equipo) return '';
+  const e=S.equipos.find(x=>x.equipo===equipo);
+  if(!e) return '';
+  const pagos=S.pagos.filter(p=>p.equipo===equipo)
+    .sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||'')||num(a.cuota)-num(b.cuota));
+  const abonado=pagos.filter(p=>p.concepto.indexOf('INSCRIP')===0).reduce((s,p)=>s+p.valor,0);
+  const deuda=pagos.filter(p=>p.concepto.indexOf('ARBITRAJE ADEU')===0).reduce((s,p)=>s+p.valor,0);
+  const val=valorInscripcion(e.categoria);
+  const saldo=Math.max(0,val-abonado);
+  return '<div class="card" style="margin-bottom:14px;border-color:var(--verde)"><h2>'+esc(corto(equipo))+
+    ' <span class="sub">'+e.categoria+'</span>'+
+    '<button class="btn sm amb noprint" id="btnImgPago" style="margin-left:auto">🖼 Imagen</button>'+
+    '<button class="btn sm noprint" id="btnCerrarPago">✕</button></h2>'+
+    '<div class="grid g4 pad">'+
+      '<div class="stat"><div class="n">$'+val.toFixed(2)+'</div><div class="l">Inscripción</div></div>'+
+      '<div class="stat"><div class="n">$'+abonado.toFixed(2)+'</div><div class="l">Abonado</div></div>'+
+      '<div class="stat'+(saldo>0?' r2':'')+'"><div class="n">$'+saldo.toFixed(2)+'</div><div class="l">'+
+        (saldo>0?'Saldo pendiente':'Al día ✔')+'</div></div>'+
+      '<div class="stat a"><div class="n">$'+deuda.toFixed(2)+'</div><div class="l">Arbitraje adeudado</div></div>'+
+    '</div>'+
+    (pagos.length? '<div class="tw"><table><thead><tr><th class="n">J</th><th>Fecha</th><th>Concepto</th>'+
+      '<th>Obs.</th><th class="n">Valor</th>'+(hayAPI()?'<th class="noprint"></th>':'')+'</tr></thead><tbody>'+
+      pagos.map(p=>'<tr><td class="n">'+esc(p.cuota||'—')+'</td>'+
+        '<td>'+(has(p.fecha)?esc(fechaTxt(p.fecha)):'<span class="muted">sin fecha</span>')+'</td>'+
+        '<td>'+esc(p.concepto)+'</td><td class="muted">'+esc(p.obs||'')+'</td>'+
+        '<td class="n b">$'+p.valor.toFixed(2)+'</td>'+
+        (hayAPI()?'<td class="n noprint"><button class="btn sm" data-borrarpago="'+
+          esc([p.equipo,p.concepto,p.cuota,p.fecha,p.valor].join('||'))+'" title="Borrar este pago">✕</button></td>':'')+
+        '</tr>').join('')+'</tbody></table></div>'+
+      '<div class="pad muted" style="font-size:11.5px">Para corregir un pago: borralo con la ✕ y volvé a '+
+      'registrarlo arriba con el valor correcto.</div>'
+      : '<div class="pad muted">Este equipo todavía no tiene ningún pago registrado.</div>')+
+    '</div>';
+}
+
 function tabPagos(){
   const cat=S.filtros.qcat||'';
   const M={};
@@ -1313,7 +1456,8 @@ function tabPagos(){
   const $$=v=>'$'+v.toFixed(2);
   const alDia=L.filter(r=>r.pagadoTodo).length;
 
-  return     '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
+  return cardRegistroPago()+cardDetallePago(S.filtros.qEquipo)+
+    '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
     '<div><label>Categoría</label>'+selCat('fQcat',cat,true)+'</div>'+
     '<div style="flex:0 0 auto"><button class="btn" onclick="window.print()">🖨 Imprimir</button></div></div></div>'+
     '<div class="grid g4" style="margin-bottom:14px">'+
@@ -1327,7 +1471,8 @@ function tabPagos(){
     '<th>Cat.</th><th>Equipo</th><th class="n">Inscripción</th><th class="n">Pagado</th><th class="n">Falta</th>'+
     '<th class="n mh">Arbitraje adeudado</th><th class="n mh">Otros</th><th class="n">Estado</th>'+
     '</tr></thead><tbody>'+
-    L.map(r=>'<tr><td><span class="tag">'+r.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>'+
+    L.map(r=>'<tr style="cursor:pointer" data-verpago="'+esc(r.equipo)+'" title="Ver el detalle de este equipo">'+
+      '<td><span class="tag">'+r.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>'+
       '<td class="b">'+esc(corto(r.equipo))+'</td>'+
       '<td class="n muted">'+$$(r.valor)+'</td>'+
       '<td class="n">'+$$(r.ins)+'</td>'+
@@ -1495,6 +1640,18 @@ function enlazar(){
     const [pid,jug]=b.dataset.cumplida.split('|'); marcarCumplida(pid,jug); });
 
   /* calendario */
+  /* pagos */
+  bindFiltro('#rpEquipo','rpEquipo'); bindFiltro('#rpConcepto','rpConcepto');
+  const pa2=$('#rpAdd'); if(pa2) pa2.onclick=rpAgregar;
+  const pv=$('#rpValor'); if(pv) pv.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); rpAgregar(); } };
+  const ps=$('#rpSave'); if(ps) ps.onclick=rpGuardar;
+  const pc=$('#rpCopy'); if(pc) pc.onclick=()=>copiar(rpFilas().map(f=>f.join('\t')).join('\n'));
+  const pcl=$('#rpClear'); if(pcl) pcl.onclick=()=>{ S.pagosNuevos=[]; render(); };
+  document.querySelectorAll('[data-delpago]').forEach(b=>b.onclick=()=>{ S.pagosNuevos.splice(+b.dataset.delpago,1); render(); });
+  document.querySelectorAll('[data-verpago]').forEach(tr=>tr.onclick=()=>{ S.filtros.qEquipo=tr.dataset.verpago; render(); window.scrollTo({top:0,behavior:'smooth'}); });
+  document.querySelectorAll('[data-borrarpago]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); borrarPago(b.dataset.borrarpago); });
+  const cp2=$('#btnCerrarPago'); if(cp2) cp2.onclick=()=>{ S.filtros.qEquipo=''; render(); };
+  const ip=$('#btnImgPago'); if(ip) ip.onclick=()=>imagenPago(S.filtros.qEquipo);
   const bi=$('#btnImg'); if(bi) bi.onclick=descargarImagen;
 
   /* íconos de ayuda */
@@ -1629,13 +1786,135 @@ async function rtGuardar(){
 async function marcarCumplida(pid,jugador){
   if(!confirm('¿'+jugador+' ya cumplió la fecha de suspensión?')) return;
   S.guardando=true;
+  bloqAbrir('Actualizando el Sheet…','Marcando la sanción de '+jugador+' como cumplida.');
   try{
-    toast('Actualizando el Sheet…');
     await apiPost({action:'setSancion',pid,jugador,valor:'CUMPLIDA'});
-    await esperar(2600); await cargar(); render();
-    toast('Listo, sanción cumplida');
-  }catch(e){ toast(e.message); }
+    bloqTexto('Verificando…','Confirmando el cambio en el Sheet.');
+    let listo=false;
+    for(let intento=1;intento<=3&&!listo;intento++){
+      await esperar(2400);
+      await cargar();
+      listo=!suspendidos(null).some(s=>s.tipo==='ROJA'&&clave(s.jugador)===clave(jugador));
+    }
+    render();
+    if(listo) bloqFin(true,'Guardado con éxito',jugador+' ya cumplió la sanción y deja de aparecer como suspendido.');
+    else bloqFin(false,'No se pudo actualizar','Revisá la hoja TARJETAS: la columna SANCION de '+jugador+' debería decir CUMPLIDA.');
+  }catch(e){ bloqFin(false,'No se pudo actualizar',e.message); }
   finally{ S.guardando=false; }
+}
+
+/* ---------- pagos ---------- */
+function rpAgregar(){
+  const equipo=$('#rpEquipo').value;
+  const e=S.equipos.find(x=>x.equipo===equipo);
+  const valor=num($('#rpValor').value);
+  if(!equipo){ toast('Elegí el equipo'); return; }
+  if(valor<=0){ toast('Poné el valor del pago'); return; }
+  S.pagosNuevos.push({ categoria:e?e.categoria:'', equipo, concepto:$('#rpConcepto').value,
+    cuota:$('#rpJornada').value, fecha:$('#rpFecha').value, valor, obs:$('#rpObs').value });
+  S.filtros.rpEquipo=equipo; S.filtros.rpConcepto=$('#rpConcepto').value;
+  render();
+  const v=$('#rpValor'); if(v){ v.value=''; v.focus(); }
+}
+const rpFilas = () => S.pagosNuevos.map(p=>[p.categoria,p.equipo,p.concepto,p.cuota,p.fecha,p.valor,p.obs]);
+async function rpGuardar(){
+  const filas=rpFilas();
+  const ok=await guardarEnSheet('PAGOS',filas,()=>
+    filas.every(f=>S.pagos.some(p=>p.equipo===f[1]&&p.concepto===f[2]&&Math.abs(p.valor-f[5])<0.01)),
+    'Pago'+(filas.length>1?'s':'')+' registrado'+(filas.length>1?'s':''));
+  if(ok){ S.pagosNuevos=[]; render(); }
+}
+async function borrarPago(clave){
+  const [equipo,concepto,cuota,fecha,valor]=clave.split('||');
+  if(!confirm('¿Borrar este pago?\n\n'+corto(equipo)+'\n'+concepto+' · $'+valor+
+    (has(fecha)?' · '+fechaTxt(fecha):'')+'\n\nEsto no se puede deshacer.')) return;
+  if(S.guardando) return;
+  S.guardando=true;
+  bloqAbrir('Borrando el pago…','No toques nada hasta que termine.');
+  try{
+    const filtros={EQUIPO:equipo,CONCEPTO:concepto,VALOR:valor};
+    if(has(cuota)) filtros.CUOTA=cuota;
+    if(has(fecha)) filtros.FECHA=fecha;
+    await apiPost({action:'borrarFilas',hoja:'PAGOS',filtros});
+    bloqTexto('Verificando…','Confirmando que salió del Sheet.');
+    const antes=S.pagos.length;
+    let listo=false;
+    for(let intento=1;intento<=3&&!listo;intento++){
+      await esperar(2400); await cargar();
+      listo=S.pagos.length<antes;
+    }
+    render();
+    if(listo) bloqFin(true,'Pago borrado','El saldo del equipo ya quedó recalculado.');
+    else bloqFin(false,'No se pudo borrar','Puede que tu Apps Script sea la versión anterior. '+
+      'Volvé a pegar el archivo APPS-SCRIPT.gs y publicá una versión nueva.');
+  }catch(e){ bloqFin(false,'No se pudo borrar',e.message); }
+  finally{ S.guardando=false; }
+}
+
+/* Imagen del estado de cuenta de un equipo, para mandarle por WhatsApp */
+function imagenPago(equipo){
+  const e=S.equipos.find(x=>x.equipo===equipo);
+  if(!e){ toast('Equipo no encontrado'); return; }
+  const pagos=S.pagos.filter(p=>p.equipo===equipo&&p.valor>0)
+    .sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||'')||num(a.cuota)-num(b.cuota));
+  const abonado=pagos.filter(p=>p.concepto.indexOf('INSCRIP')===0).reduce((s,p)=>s+p.valor,0);
+  const deuda=pagos.filter(p=>p.concepto.indexOf('ARBITRAJE ADEU')===0).reduce((s,p)=>s+p.valor,0);
+  const val=valorInscripcion(e.categoria);
+  const saldo=Math.max(0,val-abonado);
+  const P=40, HF=56;
+  const alto=478+Math.max(pagos.length,1)*HF+(deuda>0?52:0);
+
+  exportarPNG({
+    alto, nombre:'estado-'+corto(equipo).toLowerCase().replace(/[^a-z0-9]+/g,'-')+'.png', sinPie:true,
+    sub:'Estado de cuenta · '+corto(equipo),
+    dibujar:(x,W,y0)=>{
+      const ancho=W-P*2;
+      let y=y0-12;
+      /* encabezado de la tabla */
+      x.fillStyle='#1b211c'; rr(x,P,y,ancho,48,12);
+      x.fillStyle='#8fa093'; x.font=FC(20,600); x.textBaseline='middle';
+      x.textAlign='center'; x.fillText('JORNADA',P+80,y+24);
+      x.textAlign='left';   x.fillText('FECHA',P+170,y+24);
+      x.fillText('CONCEPTO',P+330,y+24);
+      x.textAlign='right';  x.fillStyle='#f5a623'; x.fillText('VALOR',W-P-24,y+24);
+      y+=56;
+      if(!pagos.length){
+        x.fillStyle='#161c17'; rr(x,P,y,ancho,48,10);
+        x.fillStyle='#8fa093'; x.font=FSS(20,500); x.textAlign='center';
+        x.fillText('Sin pagos registrados',W/2,y+24);
+        y+=HF;
+      }
+      pagos.forEach(p=>{
+        x.fillStyle='#161c17'; rr(x,P,y,ancho,48,10);
+        const cy=y+24;
+        x.font=FSS(19,600); x.fillStyle='#c9d4cb'; x.textAlign='center';
+        x.fillText(p.cuota||'—',P+80,cy);
+        x.textAlign='left'; x.fillStyle='#8fa093'; x.font=FSS(17,500);
+        x.fillText(has(p.fecha)?fechaTxt(p.fecha):'—',P+170,cy);
+        x.fillStyle='#e9efe9'; x.font=FSS(18,600);
+        x.fillText(p.concepto,P+330,cy);
+        x.textAlign='right'; x.fillStyle='#fff'; x.font=FC(24,700);
+        x.fillText('$'+p.valor.toFixed(2),W-P-24,cy+1);
+        y+=HF;
+      });
+      /* resumen */
+      y+=10;
+      const fila=(t,v,color,alto2)=>{
+        x.fillStyle='#1b211c'; rr(x,P,y,ancho,alto2||44,10);
+        x.textAlign='left'; x.font=FSS(19,600); x.fillStyle='#8fa093';
+        x.fillText(t,P+24,y+(alto2||44)/2);
+        x.textAlign='right'; x.font=FC(alto2?32:26,700); x.fillStyle=color;
+        x.fillText(v,W-P-24,y+(alto2||44)/2+1);
+        y+=(alto2||44)+8;
+      };
+      fila('Inscripción','$'+val.toFixed(2),'#c9d4cb');
+      fila('Abonado','$'+abonado.toFixed(2),'#35c25f');
+      if(deuda>0) fila('Arbitraje adeudado','$'+deuda.toFixed(2),'#f5a623');
+      fila(saldo>0?'SALDO PENDIENTE':'AL DÍA ✔', saldo>0?'$'+saldo.toFixed(2):'$0.00',
+        saldo>0?'#ff8b83':'#35c25f', 56);
+      x.textBaseline='alphabetic';
+    }
+  });
 }
 
 /* ---------- guardar el borrador de partidos ---------- */
@@ -1659,15 +1938,23 @@ async function borrarPartido(id){
     (extra? '\n\nTambién se borra: '+extra+'.' : '')+'\n\nEsto no se puede deshacer.')) return;
   if(S.guardando) return;
   S.guardando=true;
+  bloqAbrir('Borrando el partido '+id+'…','No toques nada hasta que termine.');
   try{
-    toast('Borrando '+id+'…');
     if(goles){ await apiPost({action:'borrarGoles',pid:id}); await esperar(1100); }
     if(tarj){ await apiPost({action:'borrarFilas',hoja:'TARJETAS',columna:'PARTIDO_ID',valor:id}); await esperar(1100); }
     await apiPost({action:'borrarFilas',hoja:'PARTIDOS',columna:'ID',valor:id});
-    await esperar(2600);
-    await cargar(); render();
-    toast(S.partidos.some(x=>x.id===id)? 'No se pudo borrar '+id : id+' borrado ✔');
-  }catch(e){ toast(e.message); }
+    bloqTexto('Verificando…','Confirmando que se borró del Sheet.');
+    let sigue=true;
+    for(let intento=1;intento<=3&&sigue;intento++){
+      await esperar(2400);
+      await cargar();
+      sigue=S.partidos.some(x=>x.id===id);
+    }
+    render();
+    if(sigue) bloqFin(false,'No se pudo borrar','El partido '+id+' sigue en el Sheet. Volvé a intentar.');
+    else bloqFin(true,'Borrado con éxito',
+      id+' salió del Sheet'+(extra?', junto con '+extra:'')+'.');
+  }catch(e){ bloqFin(false,'No se pudo borrar',e.message); }
   finally{ S.guardando=false; }
 }
 
@@ -1678,7 +1965,8 @@ async function guardarReprogramacion(){
   if(S.guardando) return;
   S.guardando=true;
   try{
-    toast('Guardando '+ids.length+' partido'+(ids.length>1?'s':'')+'…');
+    bloqAbrir('Guardando '+ids.length+' partido'+(ids.length>1?'s':'')+'…',
+      'Estoy escribiendo en el Sheet. No toques nada hasta que termine.');
     const pedido={};
     let jugados=0;
     ids.forEach(id=>{
@@ -1705,19 +1993,25 @@ async function guardarReprogramacion(){
           || (has(q.gl)&&String(p.gl)!==String(q.gl))
           || (has(q.gv)&&String(p.gv)!==String(q.gv));
     };
+    bloqTexto('Verificando…','Estoy releyendo el Sheet para confirmar que quedó todo.');
     let faltan=ids;
     for(let intento=1;intento<=4&&faltan.length;intento++){
       await esperar(intento===1?2000:2500);
       await cargar();
       faltan=ids.filter(noAplicado);
-      if(faltan.length) toast('Verificando… faltan '+faltan.length);
+      if(faltan.length&&intento<4)
+        bloqTexto('Verificando…','Faltan '+faltan.length+' por confirmar. Reintento '+intento+' de 3.');
     }
     S.editPartidos={};
     render();
-    toast(faltan.length? 'No se guardó: '+faltan.join(', ')
-      : jugados? 'Resultado guardado ✔ ahora cargá los goleadores'
-      : ids.length+' partido'+(ids.length>1?'s':'')+' actualizado'+(ids.length>1?'s':'')+' ✔');
-  }catch(e){ toast(e.message); }
+    if(faltan.length) bloqFin(false,'No se guardó todo','Quedaron sin guardar: '+faltan.join(', ')+
+      '. Volvé a intentar con esos.');
+    else bloqFin(true,'Guardado con éxito',
+      jugados? (jugados===ids.length?'Marcador'+(jugados>1?'es':'')+' cargado'+(jugados>1?'s':'')+
+        '. Ahora cargá los goleadores en la pestaña Goleadores.'
+        : ids.length+' partidos actualizados, '+jugados+' con marcador. Cargá los goleadores en su pestaña.')
+      : ids.length+' partido'+(ids.length>1?'s':'')+' actualizado'+(ids.length>1?'s':'')+' en el Sheet.');
+  }catch(e){ bloqFin(false,'No se pudo guardar',e.message); }
   finally{ S.guardando=false; }
 }
 function aplicarBloque(){
@@ -1901,13 +2195,13 @@ function imagenGoleadores(clave){
           : clave==='FEMENINO' ? goleadores('FEMENINO')
           : goleadores(clave);
   if(!L.length){ toast('No hay goleadores para exportar'); return; }
-  const top=L.slice(0,20), P=40, HF=62;
+  const top=L.slice(0,8), P=40, HF=62;
   const titulo = clave==='HOMBRES'?'Hombres' : clave==='FEMENINO'?'Femenino' : clave;
   const alto = 208 + 54 + top.length*HF + 20;
 
   exportarPNG({
     alto, nombre:'goleadores-'+titulo.toLowerCase().replace(/ /g,'-')+'.png', sinPie:true,
-    sub:'Goleadores · '+titulo+(L.length>top.length?'  ·  top 20':''),
+    sub:'Goleadores · '+titulo+(L.length>top.length?'  ·  top 8':''),
     dibujar:(x,W,y0)=>{
       const ancho=W-P*2;
       let y=y0-12;
