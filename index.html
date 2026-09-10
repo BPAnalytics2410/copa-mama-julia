@@ -1060,17 +1060,26 @@ function tabPlanificar(){
       : '<div class="pad muted">Vacío. Agregá partidos desde la matriz o el formulario.</div>')+
     '</div>';
 
-  /* ---- 4 · partidos que ya están en el Sheet y todavía no se jugaron ---- */
-  const prog=S.partidos.filter(p=>p.categoria===cat&&!p.jugado)
-    .sort((a,b)=>(a.fecha||'zz').localeCompare(b.fecha||'zz')||(a.jornada||0)-(b.jornada||0)||a.id.localeCompare(b.id));
+  /* ---- 4 · partidos que ya están en el Sheet ----
+     A propósito NO se filtra por la categoría del bloque 1: si programaste
+     hombres y femenino el mismo fin de semana, querés verlos todos juntos.   */
+  const verTodos=S.filtros.progTodos==='1';
+  const prog=S.partidos.filter(p=>verTodos||!p.jugado)
+    .sort((a,b)=>(a.jugado?1:0)-(b.jugado?1:0)||
+      (a.fecha||'zz').localeCompare(b.fecha||'zz')||(a.hora||'zz').localeCompare(b.hora||'zz')||
+      (a.jornada||0)-(b.jornada||0)||a.id.localeCompare(b.id));
+  const sinJugar=S.partidos.filter(p=>!p.jugado).length;
   const cambios=Object.keys(S.editPartidos).length;
   h+='<div class="card" style="margin-bottom:14px"><h2>4 · Partidos programados '+
-    '<span class="sub">'+prog.length+' sin jugar</span>'+botonAyuda('apEdit')+'</h2>'+
+    '<span class="sub">'+sinJugar+' sin jugar · todas las categorías</span>'+
+    '<button class="btn sm noprint" id="btnVerTodos" style="margin-left:auto">'+
+    (verTodos?'Ver solo los que faltan':'Ver también los jugados')+'</button>'+
+    botonAyuda('apEdit')+'</h2>'+
     ayuda('apEdit','Todo lo de un partido ya programado se maneja acá: si cambia el <b>día o la hora</b> '+
       'lo editás y guardás, y cuando se juega le ponés el <b>marcador</b> (GL = goles del local, '+
       'GV = del visitante) y pasa a jugado. Los goleadores se cargan en la pestaña <b>Goleadores</b>. '+
       'La <b>✕</b> borra el partido del Sheet, por si se canceló o se cargó por error.')+
-    (prog.length? '<div class="tw"><table><thead><tr><th>ID</th><th class="n">J</th><th>Partido</th>'+
+    (prog.length? '<div class="tw"><table><thead><tr><th>ID</th><th>Cat.</th><th class="n">J</th><th>Partido</th>'+
       '<th>Fecha</th><th>Hora</th><th class="n">GL</th><th class="n">GV</th><th>Estado</th>'+
       (hayAPI()?'<th class="noprint"></th>':'')+'</tr></thead><tbody>'+
       prog.map(p=>{
@@ -1081,13 +1090,16 @@ function tabPlanificar(){
         const gv=c.gv!==undefined?c.gv:(p.gv==null?'':p.gv);
         const conMarcador=has(gl)&&has(gv);
         return '<tr'+(S.editPartidos[p.id]?' style="box-shadow:inset 3px 0 0 var(--ambar)"':'')+'>'+
-          '<td class="b">'+esc(p.id)+'</td><td class="n">'+esc(p.jornada)+'</td>'+
+          '<td class="b">'+esc(p.id)+'</td>'+
+          '<td><span class="tag">'+p.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>'+
+          '<td class="n">'+esc(p.jornada)+'</td>'+
           '<td>'+esc(corto(p.local))+' <span class="muted">vs</span> '+esc(corto(p.visita))+'</td>'+
           '<td><input type="date" data-ep="fecha" data-id="'+esc(p.id)+'" value="'+esc(f)+'" style="min-width:130px"></td>'+
           '<td><input type="time" data-ep="hora" data-id="'+esc(p.id)+'" value="'+esc(ho)+'" style="min-width:96px"></td>'+
           '<td class="n"><input type="number" min="0" data-ep="gl" data-id="'+esc(p.id)+'" value="'+esc(gl)+'" style="width:56px;text-align:center"></td>'+
           '<td class="n"><input type="number" min="0" data-ep="gv" data-id="'+esc(p.id)+'" value="'+esc(gv)+'" style="width:56px;text-align:center"></td>'+
-          '<td>'+(conMarcador?'<span class="tag v">pasa a jugado</span>'
+          '<td>'+(S.editPartidos[p.id]&&conMarcador&&!p.jugado?'<span class="tag v">pasa a jugado</span>'
+            :p.jugado?'<span class="tag">jugado</span>'
             :p.estado==='SUSPENDIDO'?'<span class="tag r">suspendido</span>'
             :has(f)?'<span class="tag v">con fecha</span>':'<span class="tag a">sin fecha</span>')+'</td>'+
           (hayAPI()?'<td class="n noprint"><button class="btn sm" data-borrarp="'+esc(p.id)+
@@ -1337,6 +1349,7 @@ function enlazar(){
   });
   const se=$('#btnSaveEdit'); if(se) se.onclick=guardarReprogramacion;
   const ue=$('#btnUndoEdit'); if(ue) ue.onclick=()=>{ S.editPartidos={}; render(); };
+  const vt=$('#btnVerTodos'); if(vt) vt.onclick=()=>{ S.filtros.progTodos=S.filtros.progTodos==='1'?'':'1'; render(); };
   document.querySelectorAll('[data-borrarp]').forEach(b=>b.onclick=()=>borrarPartido(b.dataset.borrarp));
 
   /* registro de goleadores */
@@ -1544,36 +1557,45 @@ async function guardarReprogramacion(){
   if(S.guardando) return;
   S.guardando=true;
   try{
-    toast('Actualizando '+ids.length+' partido'+(ids.length>1?'s':'')+'…');
+    toast('Guardando '+ids.length+' partido'+(ids.length>1?'s':'')+'…');
+    const pedido={};
     let jugados=0;
-    for(const id of ids){
+    ids.forEach(id=>{
       const c=S.editPartidos[id], p=S.partidos.find(x=>x.id===id);
       const gl=c.gl!==undefined?c.gl:(p.gl==null?'':p.gl);
       const gv=c.gv!==undefined?c.gv:(p.gv==null?'':p.gv);
       const pasaAJugado=has(gl)&&has(gv);
-      if(pasaAJugado) jugados++;
-      await apiPost({action:'setPartido',id,
-        fecha:c.fecha!==undefined?c.fecha:p.fecha,
-        hora:c.hora!==undefined?c.hora:p.hora,
-        gl, gv, estado: pasaAJugado?'JUGADO':''});
-      await esperar(900);
-    }
-    await esperar(1800);
-    await cargar();
-    /* verifico que el Sheet quedó como pedimos */
-    const fallaron=ids.filter(id=>{
-      const c=S.editPartidos[id], p=S.partidos.find(x=>x.id===id);
-      if(!p) return true;
-      return (c.fecha!==undefined&&c.fecha&&p.fecha!==c.fecha)
-          || (c.hora!==undefined&&c.hora&&p.hora!==c.hora)
-          || (c.gl!==undefined&&has(c.gl)&&String(p.gl)!==String(c.gl))
-          || (c.gv!==undefined&&has(c.gv)&&String(p.gv)!==String(c.gv));
+      if(pasaAJugado&&!p.jugado) jugados++;
+      pedido[id]={ fecha:c.fecha!==undefined?c.fecha:p.fecha,
+                   hora:c.hora!==undefined?c.hora:p.hora,
+                   gl, gv, estado: pasaAJugado?'JUGADO':'' };
     });
+    /* Se mandan todos juntos, no de uno en uno: el Sheet los procesa en fila
+       pero acá no esperamos entre cada uno.                                  */
+    await Promise.all(ids.map(id=>apiPost(Object.assign({action:'setPartido',id},pedido[id]))));
+
+    /* Verifico releyendo, con reintentos: si el Sheet todavía no reflejó los
+       cambios, vuelvo a mirar en vez de dar un falso error.                   */
+    const noAplicado=id=>{
+      const q=pedido[id], p=S.partidos.find(x=>x.id===id);
+      if(!p) return true;
+      return (has(q.fecha)&&p.fecha!==q.fecha)
+          || (has(q.hora)&&p.hora!==q.hora)
+          || (has(q.gl)&&String(p.gl)!==String(q.gl))
+          || (has(q.gv)&&String(p.gv)!==String(q.gv));
+    };
+    let faltan=ids;
+    for(let intento=1;intento<=4&&faltan.length;intento++){
+      await esperar(intento===1?2000:2500);
+      await cargar();
+      faltan=ids.filter(noAplicado);
+      if(faltan.length) toast('Verificando… faltan '+faltan.length);
+    }
     S.editPartidos={};
     render();
-    toast(fallaron.length? 'No se actualizaron: '+fallaron.join(', ')
+    toast(faltan.length? 'No se guardó: '+faltan.join(', ')
       : jugados? 'Resultado guardado ✔ ahora cargá los goleadores'
-      : 'Partidos actualizados ✔');
+      : ids.length+' partido'+(ids.length>1?'s':'')+' actualizado'+(ids.length>1?'s':'')+' ✔');
   }catch(e){ toast(e.message); }
   finally{ S.guardando=false; }
 }
