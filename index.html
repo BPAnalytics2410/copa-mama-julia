@@ -925,8 +925,12 @@ function tabGoleadores(){
   if(q) L = L.filter(g=>g.jugador.indexOf(up(q))>=0||g.equipo.indexOf(up(q))>=0);
   const totCat = c => S.goles.filter(g=>g.categoria===c).reduce((s,g)=>s+g.goles,0);
   const porEquipo = {};
-  S.goles.filter(g=>!cat||g.categoria===cat).forEach(g=>porEquipo[g.equipo]=(porEquipo[g.equipo]||0)+g.goles);
-  const eqTop = Object.entries(porEquipo).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  S.goles.filter(g=>!cat||g.categoria===cat).forEach(g=>{
+    const k=g.categoria+'|'+g.equipo;
+    if(!porEquipo[k]) porEquipo[k]={categoria:g.categoria,equipo:g.equipo,goles:0};
+    porEquipo[k].goles+=g.goles;
+  });
+  const eqTop = Object.values(porEquipo).sort((a,b)=>b.goles-a.goles).slice(0,10);
 
   return cardRegistroGoles()+cardEstadoCarga()+cardNombresParecidos('GOLES')+
     '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
@@ -945,9 +949,10 @@ function tabGoleadores(){
           tablaGoleadores('Femenino',L.filter(g=>g.categoria==='FEMENINO'),'FEMENINO')+
         '</div>')+
     '<div class="card" style="margin-top:14px"><h2>Goles por equipo</h2><div class="tw"><table><thead><tr>'+
-      '<th class="pos">#</th><th>Equipo</th><th class="n">Goles con goleador</th></tr></thead><tbody>'+
-      eqTop.map((e,i)=>'<tr><td class="pos">'+(i+1)+'</td><td class="b">'+esc(corto(e[0]))+'</td>'+
-      '<td class="n"><span class="pts">'+e[1]+'</span></td></tr>').join('')+
+      '<th class="pos">#</th><th>Equipo</th>'+(cat?'':'<th>Cat.</th>')+'<th class="n">Goles con goleador</th></tr></thead><tbody>'+
+      eqTop.map((e,i)=>'<tr><td class="pos">'+(i+1)+'</td><td class="b">'+esc(corto(e.equipo))+'</td>'+
+      (cat?'':'<td><span class="tag">'+e.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>')+
+      '<td class="n"><span class="pts">'+e.goles+'</span></td></tr>').join('')+
       '</tbody></table></div></div>';
 }
 
@@ -1034,22 +1039,39 @@ function cardRegistroTarjetas(){
 }
 
 function tabTarjetas(){
-  const cat=S.filtros.tcat||'';
-  const L=fairplay(cat||null);
+  const cat=S.filtros.tcat||'', eqf=S.filtros.teq||'';
+  const ixEqf=eqf.indexOf('|');
+  const eqfCat=ixEqf<0?'':eqf.slice(0,ixEqf), eqfEq=ixEqf<0?eqf:eqf.slice(ixEqf+1);
+  const mismoEq = x => !eqf||(x.categoria===eqfCat&&x.equipo===eqfEq);
+  const eqs=[...new Set(S.equipos.filter(e=>!cat||e.categoria===cat).map(e=>e.categoria+'|'+e.equipo))]
+    .map(k=>{ const i=k.indexOf('|'); return {categoria:k.slice(0,i),equipo:k.slice(i+1)}; })
+    .sort((a,b)=>a.equipo.localeCompare(b.equipo));
+  const L=fairplay(cat||null).filter(mismoEq);
   const porEq={};
-  L.forEach(t=>{ const e=porEq[t.equipo]||(porEq[t.equipo]={equipo:t.equipo,categoria:t.categoria,am:0,ro:0});
+  L.forEach(t=>{ const k=t.categoria+'|'+t.equipo;
+    const e=porEq[k]||(porEq[k]={equipo:t.equipo,categoria:t.categoria,am:0,ro:0});
     e.am+=t.am; e.ro+=t.ro; });
   const eq=Object.values(porEq).sort((a,b)=>(b.ro*3+b.am)-(a.ro*3+a.am));
   const tam=L.reduce((s,t)=>s+t.am,0), tro=L.reduce((s,t)=>s+t.ro,0);
-  const susp=suspendidos(cat||null);
+  const susp=suspendidos(cat||null).filter(mismoEq);
   const rojasPend=susp.filter(s=>s.tipo==='ROJA');
   const N=amParaSusp();
   const alBorde=L.filter(t=>t.am===N-1).length;
-  const partSusp=S.partidos.filter(p=>p.estado==='SUSPENDIDO'&&(!cat||p.categoria===cat));
+  const partSusp=S.partidos.filter(p=>p.estado==='SUSPENDIDO'&&(!cat||p.categoria===cat)&&
+    (!eqf||(p.categoria===eqfCat&&(p.local===eqfEq||p.visita===eqfEq))));
+  const jJugadas=S.partidos.filter(p=>p.jugado&&p.fase==='GRUPOS'&&(!cat||p.categoria===cat)&&
+    (!eqf||(p.categoria===eqfCat&&(p.local===eqfEq||p.visita===eqfEq)))).map(p=>p.jornada).filter(has);
+  const ultimaJ=jJugadas.length?Math.max(...jJugadas):null;
 
   return cardRegistroTarjetas()+cardNombresParecidos('TARJETAS')+
     '<div class="card" style="margin-bottom:14px"><div class="pad row noprint">'+
     '<div><label>Categoría</label>'+selCat('fTcat',cat,true)+'</div>'+
+    '<div><label>Equipo</label><select id="fTeq"><option value="">Todos</option>'+
+      eqs.map(e=>{ const k=e.categoria+'|'+e.equipo;
+        return '<option'+(k===eqf?' selected':'')+' value="'+esc(k)+'">'+esc(corto(e.equipo))+
+          (cat?'':' · '+e.categoria.replace('GRUPO ','').replace('FEMENINO','FEM'))+'</option>'; }).join('')+'</select></div>'+
+    '<div style="flex:0 0 auto;align-self:center" class="muted">'+
+      (ultimaJ!=null?'Datos subidos hasta la jornada '+ultimaJ:'Todavía no hay jornadas jugadas')+'</div>'+
     '<div style="flex:0 0 auto"><button class="btn" onclick="window.print()">🖨 Imprimir</button></div></div></div>'+
     '<div class="grid g4" style="margin-bottom:14px">'+
       '<div class="stat r2"><div class="n">'+rojasPend.length+'</div><div class="l">Suspendidos por roja</div></div>'+
@@ -1352,7 +1374,7 @@ const valorInscripcion = cat => num(cat==='FEMENINO'
 /* ---------- registrar un pago ---------- */
 const CONCEPTOS=['INSCRIPCION','ARBITRAJE','ARBITRAJE ADEUDADO','MULTA','OTRO'];
 function cardRegistroPago(){
-  const eq=S.filtros.rpEquipo||(S.equipos[0]||{}).equipo||'';
+  const eq=S.filtros.rpEquipo||(S.equipos[0]?S.equipos[0].categoria+'|'+S.equipos[0].equipo:'');
   const con=S.filtros.rpConcepto||'INSCRIPCION';
   const hoy=new Date().toISOString().slice(0,10);
   return '<div class="card noprint" style="margin-bottom:14px"><h2>➕ Registrar pago'+
@@ -1364,8 +1386,10 @@ function cardRegistroPago(){
     '<div class="pad">'+
     '<div class="row" style="margin-bottom:10px">'+
       '<div style="flex:2 1 240px"><label>Equipo</label><select id="rpEquipo">'+
-        CATS.map(c=>'<optgroup label="'+c+'">'+equiposDe(c).map(e=>
-          '<option value="'+esc(e)+'"'+(e===eq?' selected':'')+'>'+esc(corto(e))+'</option>').join('')+'</optgroup>').join('')+
+        CATS.map(c=>'<optgroup label="'+c+'">'+equiposDe(c).map(e=>{
+          const k=c+'|'+e;
+          return '<option value="'+esc(k)+'"'+(k===eq?' selected':'')+'>'+esc(corto(e))+'</option>';
+        }).join('')+'</optgroup>').join('')+
         '</select></div>'+
       '<div><label>Concepto</label><select id="rpConcepto">'+
         CONCEPTOS.map(c=>'<option'+(c===con?' selected':'')+'>'+c+'</option>').join('')+'</select></div>'+
@@ -1396,16 +1420,18 @@ function cardRegistroPago(){
 }
 
 /* ---------- detalle de un equipo, con foto para mandarle ---------- */
-function cardDetallePago(equipo){
-  if(!equipo) return '';
-  const e=S.equipos.find(x=>x.equipo===equipo);
+function cardDetallePago(claveEq){
+  if(!claveEq) return '';
+  const ix0=claveEq.indexOf('|');
+  const categoria=ix0<0?'':claveEq.slice(0,ix0), equipo=ix0<0?claveEq:claveEq.slice(ix0+1);
+  const e=S.equipos.find(x=>x.categoria===categoria&&x.equipo===equipo);
   if(!e) return '';
-  const pagos=S.pagos.filter(p=>p.equipo===equipo)
+  const pagos=S.pagos.filter(p=>p.equipo===equipo&&p.categoria===categoria)
     .sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||'')||num(a.cuota)-num(b.cuota));
   const abonado=pagos.filter(p=>p.concepto.indexOf('INSCRIP')===0).reduce((s,p)=>s+p.valor,0);
   const deuda=pagos.filter(p=>p.concepto.indexOf('ARBITRAJE ADEU')===0).reduce((s,p)=>s+p.valor,0);
   const val=valorInscripcion(e.categoria);
-  const saldo=Math.max(0,val-abonado);
+  const saldo=Math.max(0,val-abonado+deuda);
   return '<div class="card" style="margin-bottom:14px;border-color:var(--verde)"><h2>'+esc(corto(equipo))+
     ' <span class="sub">'+e.categoria+'</span>'+
     '<button class="btn sm amb noprint" id="btnImgPago" style="margin-left:auto">🖼 Imagen</button>'+
@@ -1420,7 +1446,7 @@ function cardDetallePago(equipo){
     (pagos.length? '<div class="tw"><table><thead><tr><th class="n">Jornada</th><th>Fecha</th><th>Concepto</th>'+
       '<th class="n">Valor</th>'+(hayAPI()?'<th class="noprint"></th>':'')+'</tr></thead><tbody>'+
       pagos.map(p=>{
-        const clave=[p.equipo,p.concepto,p.cuota,p.fecha,p.valor].join('||');
+        const clave=[p.categoria,p.equipo,p.concepto,p.cuota,p.fecha,p.valor].join('||');
         const c=S.editPagos[clave]||{};
         const cuota=c.cuota!==undefined?c.cuota:p.cuota;
         const fecha=c.fecha!==undefined?c.fecha:p.fecha;
@@ -1489,7 +1515,7 @@ function tabPagos(){
     '<th>Cat.</th><th>Equipo</th><th class="n">Inscripción</th><th class="n">Pagado</th><th class="n">Falta</th>'+
     '<th class="n mh">Arbitraje adeudado</th><th class="n mh">Otros</th><th class="n">Estado</th>'+
     '</tr></thead><tbody>'+
-    L.map(r=>'<tr style="cursor:pointer" data-verpago="'+esc(r.equipo)+'" title="Ver el detalle de este equipo">'+
+    L.map(r=>'<tr style="cursor:pointer" data-verpago="'+esc(r.categoria+'|'+r.equipo)+'" title="Ver el detalle de este equipo">'+
       '<td><span class="tag">'+r.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>'+
       '<td class="b">'+esc(corto(r.equipo))+'</td>'+
       '<td class="n muted">'+$$(r.valor)+'</td>'+
@@ -1583,7 +1609,7 @@ function render(){
 }
 function bindFiltro(sel,key){ const el=$(sel); if(el) el.onchange=e=>{ S.filtros[key]=e.target.value; render(); }; }
 function enlazar(){
-  bindFiltro('#fGcat','gcat'); bindFiltro('#fTcat','tcat'); bindFiltro('#fQcat','qcat');
+  bindFiltro('#fGcat','gcat'); bindFiltro('#fTcat','tcat'); bindFiltro('#fTeq','teq'); bindFiltro('#fQcat','qcat');
   bindFiltro('#fCcat','ccat'); bindFiltro('#fCjor','cjor'); bindFiltro('#fCeq','ceq'); bindFiltro('#fCest','cest');
   bindFiltro('#fCdia','cdia');
   bindFiltro('#fPcat','pcat');
@@ -1673,7 +1699,7 @@ function enlazar(){
   /* editar un pago ya cargado: jornada, fecha o valor */
   document.querySelectorAll('[data-editpago]').forEach(inp=>inp.onchange=()=>{
     const clave=inp.dataset.clave, campo=inp.dataset.editpago;
-    const [oEquipo,oConcepto,oCuota,oFecha,oValor]=clave.split('||');
+    const [oCategoria,oEquipo,oConcepto,oCuota,oFecha,oValor]=clave.split('||');
     if(!S.editPagos[clave]) S.editPagos[clave]={};
     S.editPagos[clave][campo]=inp.value;
     const c=S.editPagos[clave];
@@ -1837,14 +1863,15 @@ async function marcarCumplida(pid,jugador){
 
 /* ---------- pagos ---------- */
 function rpAgregar(){
-  const equipo=$('#rpEquipo').value;
-  const e=S.equipos.find(x=>x.equipo===equipo);
+  const val=$('#rpEquipo').value;
+  const ix=val.indexOf('|');
+  const categoria=ix<0?'':val.slice(0,ix), equipo=ix<0?val:val.slice(ix+1);
   const valor=num($('#rpValor').value);
   if(!equipo){ toast('Elegí el equipo'); return; }
   if(valor<=0){ toast('Poné el valor del pago'); return; }
-  S.pagosNuevos.push({ categoria:e?e.categoria:'', equipo, concepto:$('#rpConcepto').value,
+  S.pagosNuevos.push({ categoria, equipo, concepto:$('#rpConcepto').value,
     cuota:$('#rpJornada').value, fecha:$('#rpFecha').value, valor, obs:$('#rpObs').value });
-  S.filtros.rpEquipo=equipo; S.filtros.rpConcepto=$('#rpConcepto').value;
+  S.filtros.rpEquipo=val; S.filtros.rpConcepto=$('#rpConcepto').value;
   render();
   const v=$('#rpValor'); if(v){ v.value=''; v.focus(); }
 }
@@ -1852,19 +1879,19 @@ const rpFilas = () => S.pagosNuevos.map(p=>[p.categoria,p.equipo,p.concepto,p.cu
 async function rpGuardar(){
   const filas=rpFilas();
   const ok=await guardarEnSheet('PAGOS',filas,()=>
-    filas.every(f=>S.pagos.some(p=>p.equipo===f[1]&&p.concepto===f[2]&&Math.abs(p.valor-f[5])<0.01)),
+    filas.every(f=>S.pagos.some(p=>p.categoria===f[0]&&p.equipo===f[1]&&p.concepto===f[2]&&Math.abs(p.valor-f[5])<0.01)),
     'Pago'+(filas.length>1?'s':'')+' registrado'+(filas.length>1?'s':''));
   if(ok){ S.pagosNuevos=[]; render(); }
 }
 async function borrarPago(clave){
-  const [equipo,concepto,cuota,fecha,valor]=clave.split('||');
-  if(!confirm('¿Borrar este pago?\n\n'+corto(equipo)+'\n'+concepto+' · $'+valor+
+  const [categoria,equipo,concepto,cuota,fecha,valor]=clave.split('||');
+  if(!confirm('¿Borrar este pago?\n\n'+corto(equipo)+' ('+categoria+')\n'+concepto+' · $'+valor+
     (has(fecha)?' · '+fechaTxt(fecha):'')+'\n\nEsto no se puede deshacer.')) return;
   if(S.guardando) return;
   S.guardando=true;
   bloqAbrir('Borrando el pago…','No toques nada hasta que termine.');
   try{
-    const filtros={EQUIPO:equipo,CONCEPTO:concepto,VALOR:valor};
+    const filtros={CATEGORIA:categoria,EQUIPO:equipo,CONCEPTO:concepto,VALOR:valor};
     if(has(cuota)) filtros.CUOTA=cuota;
     if(has(fecha)) filtros.FECHA=fecha;
     await apiPost({action:'borrarFilas',hoja:'PAGOS',filtros});
@@ -1895,14 +1922,13 @@ async function guardarEdicionPagos(){
     'Corrigiendo cada pago en el Sheet. No toques nada hasta que termine.');
   try{
     const pedido=claves.map(clave=>{
-      const [equipo,concepto,cuotaOrig,fechaOrig,valorOrig]=clave.split('||');
-      const orig=S.pagos.find(p=>p.equipo===equipo&&p.concepto===concepto&&
+      const [categoria,equipo,concepto,cuotaOrig,fechaOrig,valorOrig]=clave.split('||');
+      const orig=S.pagos.find(p=>p.categoria===categoria&&p.equipo===equipo&&p.concepto===concepto&&
         String(p.cuota)===cuotaOrig&&p.fecha===fechaOrig&&String(p.valor)===valorOrig);
-      const e=S.equipos.find(x=>x.equipo===equipo);
       const c=S.editPagos[clave];
       return {
         equipo, concepto, cuotaOrig, fechaOrig, valorOrig,
-        categoria: e?e.categoria:(orig?orig.categoria:''),
+        categoria: categoria||(orig?orig.categoria:''),
         obs: orig?orig.obs:'',
         cuotaNueva: c.cuota!==undefined?c.cuota:cuotaOrig,
         fechaNueva: c.fecha!==undefined?c.fecha:fechaOrig,
@@ -1911,7 +1937,7 @@ async function guardarEdicionPagos(){
     });
     for(const p of pedido){
       await apiPost({action:'borrarFilas',hoja:'PAGOS',filtros:{
-        EQUIPO:p.equipo, CONCEPTO:p.concepto, CUOTA:p.cuotaOrig, FECHA:p.fechaOrig, VALOR:p.valorOrig }});
+        CATEGORIA:p.categoria, EQUIPO:p.equipo, CONCEPTO:p.concepto, CUOTA:p.cuotaOrig, FECHA:p.fechaOrig, VALOR:p.valorOrig }});
       await esperar(900);
       await apiPost({action:'append',hoja:'PAGOS',
         rows:[[p.categoria,p.equipo,p.concepto,p.cuotaNueva,p.fechaNueva,p.valorNueva,p.obs]]});
@@ -1922,7 +1948,7 @@ async function guardarEdicionPagos(){
     for(let intento=1;intento<=4&&faltan.length;intento++){
       await esperar(intento===1?2200:2500);
       await cargar();
-      faltan=pedido.filter(p=>!S.pagos.some(x=>x.equipo===p.equipo&&x.concepto===p.concepto&&
+      faltan=pedido.filter(p=>!S.pagos.some(x=>x.categoria===p.categoria&&x.equipo===p.equipo&&x.concepto===p.concepto&&
         String(x.cuota)===String(p.cuotaNueva)&&x.fecha===p.fechaNueva&&Math.abs(x.valor-p.valorNueva)<0.01));
       if(faltan.length&&intento<4) bloqTexto('Verificando…','Faltan '+faltan.length+' por confirmar. Reintento '+intento+' de 3.');
     }
@@ -1937,15 +1963,17 @@ async function guardarEdicionPagos(){
 }
 
 /* Imagen del estado de cuenta de un equipo, para mandarle por WhatsApp */
-function imagenPago(equipo){
-  const e=S.equipos.find(x=>x.equipo===equipo);
+function imagenPago(claveEq){
+  const ix0=claveEq.indexOf('|');
+  const categoria=ix0<0?'':claveEq.slice(0,ix0), equipo=ix0<0?claveEq:claveEq.slice(ix0+1);
+  const e=S.equipos.find(x=>x.categoria===categoria&&x.equipo===equipo);
   if(!e){ toast('Equipo no encontrado'); return; }
-  const pagos=S.pagos.filter(p=>p.equipo===equipo&&p.valor>0)
+  const pagos=S.pagos.filter(p=>p.equipo===equipo&&p.categoria===categoria&&p.valor>0)
     .sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||'')||num(a.cuota)-num(b.cuota));
   const abonado=pagos.filter(p=>p.concepto.indexOf('INSCRIP')===0).reduce((s,p)=>s+p.valor,0);
   const deuda=pagos.filter(p=>p.concepto.indexOf('ARBITRAJE ADEU')===0).reduce((s,p)=>s+p.valor,0);
   const val=valorInscripcion(e.categoria);
-  const saldo=Math.max(0,val-abonado);
+  const saldo=Math.max(0,val-abonado+deuda);
   const P=40, HF=56;
   const alto=478+Math.max(pagos.length,1)*HF+(deuda>0?52:0);
 
