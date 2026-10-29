@@ -451,6 +451,8 @@ async function guardarEnSheet(hoja,rows,verificar,etiqueta){
 /* ---------- carga ---------- */
 async function cargar(){
   try{ S.borrador = JSON.parse(LSget(LS_DRAFT)||'[]'); }catch(e){ S.borrador=[]; }
+  /* los cruces mandados antes de este arreglo quedaron como GRUPO A aunque el rival fuera del B */
+  S.borrador = S.borrador.map(p=>({...p, categoria:catPartido(p.categoria,p.fase)}));
   if(SHEET_ID){
     try{ await cargarSheets(SHEET_ID); S.origen='Google Sheets'; return; }
     catch(e){ console.error(e); toast('No pude leer el Sheet, muestro la última copia'); }
@@ -522,6 +524,41 @@ const PE = ()=>num(S.cfg.PTS_EMPATE)||1;
 const clasN = c => num(c==='FEMENINO'? (S.cfg.CLASIFICAN_FEMENINO||S.cfg.CLASIFICAN_POR_GRUPO) : S.cfg.CLASIFICAN_POR_GRUPO)||4;
 const equiposDe = c => S.equipos.filter(e=>e.categoria===c&&e.activo).map(e=>e.equipo);
 const partidosDe = (c,fase) => S.partidos.filter(p=>p.categoria===c&&(fase?p.fase===fase:true));
+
+/* ---------- categoría de los partidos de eliminatoria ----------
+   En la fase de grupos un partido es de GRUPO A, GRUPO B o FEMENINO. Pero en
+   octavos/cuartos/etc. de hombres se cruzan equipos de los DOS grupos (A1 vs B8),
+   así que esos partidos son de la categoría "HOMBRES".                          */
+const catPartido = (cat,fase) => (fase&&fase!=='GRUPOS'&&cat!=='FEMENINO') ? 'HOMBRES' : cat;
+
+/* equipos que se pueden elegir según la categoría y la fase del partido */
+const equiposPara = (cat,fase) =>
+  cat==='FEMENINO' ? equiposDe('FEMENINO')
+  : (cat==='HOMBRES'||(fase&&fase!=='GRUPOS')) ? equiposDe('GRUPO A').concat(equiposDe('GRUPO B'))
+  : equiposDe(cat);
+
+/* <option>s de un desplegable de equipos. Si el valor actual NO está en la lista se
+   agrega igual: antes, al faltar, el desplegable mostraba OTRO equipo sin avisar
+   (por eso todos los rivales aparecían como "NAULA AVILA").                      */
+function opcionesEquipos(cat,fase,actual){
+  const l=equiposPara(cat,fase).slice();
+  if(actual&&l.indexOf(actual)<0) l.unshift(actual);
+  return l.map(e=>'<option value="'+esc(e)+'"'+(e===actual?' selected':'')+'>'+esc(corto(e))+'</option>').join('');
+}
+
+/* ¿el partido cuenta dentro de esta categoría al filtrar? Los cruces de hombres
+   aparecen tanto en GRUPO A como en GRUPO B, porque juegan equipos de los dos. */
+const enCat = (p,cat) => p.categoria===cat ||
+  (p.categoria==='HOMBRES' && (cat==='GRUPO A'||cat==='GRUPO B'||cat==='HOMBRES'));
+
+/* categoría REAL del equipo que anota/recibe tarjeta. Sirve para que un gol del
+   Grupo B en un cruce no quede guardado como si fuera del Grupo A.            */
+function catDeEquipo(p,equipo){
+  if(p.categoria==='FEMENINO') return 'FEMENINO';
+  if(p.fase==='GRUPOS') return p.categoria;
+  const e=S.equipos.find(x=>x.equipo===equipo&&x.categoria!=='FEMENINO');
+  return e?e.categoria:p.categoria;
+}
 
 function tabla(cat){
   const T={};
@@ -1057,8 +1094,8 @@ function tabTarjetas(){
   const rojasPend=susp.filter(s=>s.tipo==='ROJA');
   const N=amParaSusp();
   const alBorde=L.filter(t=>t.am===N-1).length;
-  const partSusp=S.partidos.filter(p=>p.estado==='SUSPENDIDO'&&(!cat||p.categoria===cat)&&
-    (!eqf||(p.categoria===eqfCat&&(p.local===eqfEq||p.visita===eqfEq))));
+  const partSusp=S.partidos.filter(p=>p.estado==='SUSPENDIDO'&&(!cat||enCat(p,cat))&&
+    (!eqf||(enCat(p,eqfCat)&&(p.local===eqfEq||p.visita===eqfEq))));
   const jJugadas=S.partidos.filter(p=>p.jugado&&p.fase==='GRUPOS'&&(!cat||p.categoria===cat)&&
     (!eqf||(p.categoria===eqfCat&&(p.local===eqfEq||p.visita===eqfEq)))).map(p=>p.jornada).filter(has);
   const ultimaJ=jJugadas.length?Math.max(...jJugadas):null;
@@ -1116,13 +1153,13 @@ function tabTarjetas(){
 function tabCalendario(){
   const cat=S.filtros.ccat||'', jor=S.filtros.cjor||'', eqf=S.filtros.ceq||'',
         est=S.filtros.cest||'', dia=S.filtros.cdia||'';
-  let L=S.partidos.filter(p=>(!cat||p.categoria===cat)&&(!jor||String(p.jornada)===String(jor))&&
+  let L=S.partidos.filter(p=>(!cat||enCat(p,cat))&&(!jor||String(p.jornada)===String(jor))&&
     (!eqf||p.local===eqf||p.visita===eqf)&&(!est|| (est==='JUGADO'?p.jugado:!p.jugado))&&
     (!dia|| (dia==='SIN FECHA'? !has(p.fecha) : p.fecha===dia)));
   const jornadas=[...new Set(S.partidos.map(p=>p.jornada).filter(has))].sort((a,b)=>a-b);
   const eqs=[...new Set(S.equipos.filter(e=>!cat||e.categoria===cat).map(e=>e.equipo))].sort();
   /* los días disponibles según los demás filtros, para poder bajar un solo día */
-  const dias=[...new Set(S.partidos.filter(p=>(!cat||p.categoria===cat)&&
+  const dias=[...new Set(S.partidos.filter(p=>(!cat||enCat(p,cat))&&
     (!jor||String(p.jornada)===String(jor))).map(p=>p.fecha).filter(has))].sort();
 
   /* Cada bloque es una jornada de UN día: si la jornada 6 va de viernes a
@@ -1235,10 +1272,10 @@ function tabPlanificar(){
         '<td class="n"><input type="number" min="1" data-edit="jornada" data-i="'+i+'" value="'+esc(p.jornada)+'" style="width:56px;text-align:center"></td>'+
         '<td><div style="display:flex;gap:5px;align-items:center">'+
           '<select data-edit="local" data-i="'+i+'" style="min-width:120px">'+
-            equiposDe(p.categoria).map(e=>'<option value="'+esc(e)+'"'+(e===p.local?' selected':'')+'>'+esc(corto(e))+'</option>').join('')+
+            opcionesEquipos(p.categoria,p.fase,p.local)+
           '</select><span class="muted">vs</span>'+
           '<select data-edit="visita" data-i="'+i+'" style="min-width:120px">'+
-            equiposDe(p.categoria).map(e=>'<option value="'+esc(e)+'"'+(e===p.visita?' selected':'')+'>'+esc(corto(e))+'</option>').join('')+
+            opcionesEquipos(p.categoria,p.fase,p.visita)+
           '</select></div></td>'+
         '<td><input type="date" data-edit="fecha" data-i="'+i+'" value="'+esc(p.fecha)+'" style="min-width:130px"></td>'+
         '<td><input type="time" data-edit="hora" data-i="'+i+'" value="'+esc(p.hora)+'" style="min-width:96px"></td>'+
@@ -1621,6 +1658,7 @@ function enlazar(){
       $('#nLocal').scrollIntoView({behavior:'smooth',block:'center'}); toast('Cargado: '+corto(td.dataset.a)+' vs '+corto(td.dataset.b)); }
   });
   const add=$('#btnAdd'); if(add) add.onclick=agregarPartido;
+  const nc=$('#nCat'), nf=$('#nFase'); if(nc) nc.onchange=refrescarEquiposForm; if(nf) nf.onchange=refrescarEquiposForm;
   const gen=$('#btnGenJ'); if(gen) gen.onclick=generarJornada;
   document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
     S.borrador.splice(+b.dataset.del,1); guardarBorrador(); render(); });
@@ -1725,8 +1763,20 @@ function enlazar(){
 
 /* ---------- acciones planificador ---------- */
 function guardarBorrador(){ LSset(LS_DRAFT,JSON.stringify(S.borrador)); }
+/* Al cambiar la categoria o la fase del formulario, las listas de Local y Visita se
+   rehacen: en una eliminatoria de hombres hay que poder elegir equipos de los dos grupos. */
+function refrescarEquiposForm(){
+  const l=$('#nLocal'), v=$('#nVisita'); if(!l||!v) return;
+  const lista=equiposPara($('#nCat').value,$('#nFase').value);
+  const lv=l.value, vv=v.value;
+  const opts=sel=>lista.map(e=>'<option value="'+esc(e)+'"'+(e===sel?' selected':'')+'>'+esc(corto(e))+'</option>').join('');
+  const nuevoL=lista.indexOf(lv)>=0?lv:lista[0];
+  const nuevoV=lista.indexOf(vv)>=0&&vv!==nuevoL?vv:(lista.find(e=>e!==nuevoL)||lista[0]);
+  l.innerHTML=opts(nuevoL); v.innerHTML=opts(nuevoV);
+}
 function agregarPartido(){
-  const p={ id:'', categoria:$('#nCat').value, fase:$('#nFase').value, jornada:$('#nJor').value||'',
+  const fase0=$('#nFase').value;
+  const p={ id:'', categoria:catPartido($('#nCat').value,fase0), fase:fase0, jornada:$('#nJor').value||'',
     fecha:$('#nFecha').value, hora:$('#nHora').value, cancha:'',
     local:$('#nLocal').value, visita:$('#nVisita').value };
   if(p.local===p.visita){ toast('Local y visita no pueden ser el mismo'); return; }
@@ -1752,19 +1802,45 @@ function generarJornada(){
 }
 function mandarCruces(tipo){
   const A=tabla('GRUPO A'), B=tabla('GRUPO B'), F=tabla('FEMENINO');
-  const nid=nextId(); let k=0;
-  if(tipo==='H'){
-    const n=clasN('GRUPO A'), fase=faseDe(n*2);
-    for(let i=0;i<n;i++){ const a=A[i],b=B[n-1-i]; if(!a||!b) continue;
-      S.borrador.push({id:nid(++k),categoria:'GRUPO A',fase,jornada:'',fecha:'',hora:'',cancha:'',local:a.equipo,visita:b.equipo}); }
+  const hombres=tipo==='H';
+  const n=clasN(hombres?'GRUPO A':'FEMENINO');
+  const fase=hombres? faseDe(n*2) : faseDe(n);
+  const categoria=catPartido(hombres?'GRUPO A':'FEMENINO',fase);   /* HOMBRES o FEMENINO */
+
+  /* los cruces: A1 vs B8, A2 vs B7… (hombres) o F1 vs F8, F2 vs F7… (femenino) */
+  const pares=[];
+  if(hombres){
+    for(let i=0;i<n;i++){ const a=A[i], b=B[n-1-i]; if(a&&b) pares.push([a.equipo,b.equipo]); }
   } else {
-    const n=clasN('FEMENINO'), fase=faseDe(n);
-    for(let i=0;i<Math.floor(n/2);i++){ const a=F[i],b=F[n-1-i]; if(!a||!b) continue;
-      S.borrador.push({id:nid(++k),categoria:'FEMENINO',fase,jornada:'',fecha:'',hora:'',cancha:'',local:a.equipo,visita:b.equipo}); }
+    for(let i=0;i<Math.floor(n/2);i++){ const a=F[i], b=F[n-1-i]; if(a&&b) pares.push([a.equipo,b.equipo]); }
   }
+  if(!pares.length){ toast('No pude armar los cruces (faltan equipos)'); return; }
+
+  /* Cada clic antes AGREGABA otra tanda encima de la anterior. Ahora se reemplaza
+     la que ya estaba en el borrador para esta fase, así no se duplica.          */
+  const mismaTanda = p => p.fase===fase && (hombres? p.categoria!=='FEMENINO' : p.categoria==='FEMENINO');
+  /* …pero lo que ya tiene fecha u hora es trabajo tuyo: eso se conserva */
+  const conservados = S.borrador.filter(p=>mismaTanda(p)&&(has(p.fecha)||has(p.hora)))
+    .map(p=>({...p, categoria}));
+  S.borrador = S.borrador.filter(p=>!mismaTanda(p)).concat(conservados);
+
+  /* los que ya están en el Sheet, o ya conservados en el borrador, no se repiten */
+  const mismoCruce = (p,x,y) => (p.local===x&&p.visita===y)||(p.local===y&&p.visita===x);
+  const yaEsta = (x,y) => S.partidos.some(p=>mismaTanda(p)&&mismoCruce(p,x,y)) ||
+                          conservados.some(p=>mismoCruce(p,x,y));
+  const nuevos = pares.filter(([x,y])=>!yaEsta(x,y));
+  if(!nuevos.length){
+    guardarBorrador(); render();
+    toast('Esos cruces de '+fase+' ya están en el Sheet o en el borrador'); return;
+  }
+
+  const nid=nextId();                       /* después de limpiar, para no saltar números */
+  nuevos.forEach(([local,visita],i)=>S.borrador.push({
+    id:nid(i+1), categoria, fase, jornada:'', fecha:'', hora:'', cancha:'', local, visita }));
   guardarBorrador();
-  if(!k){ toast('No pude armar los cruces (faltan equipos)'); return; }
-  S.tab='planificar'; render(); toast(k+' cruces al borrador');
+  S.tab='planificar'; render();
+  toast(nuevos.length+' cruces de '+fase+' en el borrador'+
+    (nuevos.length<pares.length?' ('+(pares.length-nuevos.length)+' ya estaban)':''));
 }
 function borradorTSV(){
   return S.borrador.map(p=>[p.id,p.categoria,p.fase,p.jornada,p.fecha,p.hora,p.cancha,p.local,'','',p.visita,'PENDIENTE','']
@@ -1811,7 +1887,7 @@ function rgAgregar(){
   if(!jug) return;
   const y=S.golesNuevos.find(g=>g.pid===p.id&&g.equipo===equipo&&clave(g.jugador)===clave(jug));
   if(y) y.goles+=n;
-  else S.golesNuevos.push({pid:p.id,categoria:p.categoria,jornada:p.jornada,equipo,jugador:jug,goles:n});
+  else S.golesNuevos.push({pid:p.id,categoria:catDeEquipo(p,equipo),jornada:p.jornada,equipo,jugador:jug,goles:n});
   render(); const el=$('#rgJugador'); if(el) el.focus();
 }
 const rgFilas = () => S.golesNuevos.map(g=>[g.pid,g.categoria,g.jornada,g.equipo,g.jugador,g.goles]);
@@ -1830,7 +1906,7 @@ function rtAgregar(){
   if(am<1&&ro<1){ toast('Poné al menos una amarilla o una roja'); return; }
   const jug=nombreConfirmado(equipo,escrito,'TARJETAS');
   if(!jug) return;
-  S.tarjNuevas.push({pid:p.id,categoria:p.categoria,jornada:p.jornada,equipo,jugador:jug,am,ro,
+  S.tarjNuevas.push({pid:p.id,categoria:catDeEquipo(p,equipo),jornada:p.jornada,equipo,jugador:jug,am,ro,
     sancion:ro>0?'PENDIENTE':''});
   render(); const el=$('#rtJugador'); if(el) el.focus();
 }
