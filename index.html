@@ -453,6 +453,15 @@ async function cargar(){
   try{ S.borrador = JSON.parse(LSget(LS_DRAFT)||'[]'); }catch(e){ S.borrador=[]; }
   /* los cruces mandados antes de este arreglo quedaron como GRUPO A aunque el rival fuera del B */
   S.borrador = S.borrador.map(p=>({...p, categoria:catPartido(p.categoria,p.fase)}));
+  /* los cruces de eliminatoria mandados antes de poder editarlos no tienen slotKey (la posición
+     en la llave): se les asigna una, en el orden en que se crearon, para que ya se puedan editar. */
+  ['OCTAVOS','CUARTOS','SEMIFINAL','FINAL','TERCER PUESTO'].forEach(fase=>{
+    ['H','F'].forEach(track=>{
+      S.borrador.filter(p=>p.fase===fase&&esDeTrack(p,track)&&p.slotKey===undefined)
+        .sort((a,b)=>idNum(a)-idNum(b))
+        .forEach((p,i)=>{ p.slotKey=track+'|'+fase+'|'+i; });
+    });
+  });
   if(SHEET_ID){
     try{ await cargarSheets(SHEET_ID); S.origen='Google Sheets'; return; }
     catch(e){ console.error(e); toast('No pude leer el Sheet, muestro la última copia'); }
@@ -598,58 +607,65 @@ function armarLlave(track){
   const f0=faseInicial(track), i0=RONDAS.indexOf(f0);
   if(i0<0) return {rondas:[],tercero:null};
   const fases=RONDAS.slice(i0);
-  const enBorrador=(fase,x,y)=>S.borrador.some(p=>p.fase===fase&&esDeTrack(p,track)&&mismoCruce(p,x,y));
   const delSheet=fase=>S.partidos.filter(p=>p.fase===fase&&esDeTrack(p,track));
+  /* fila del borrador que ocupa una posición de la llave (por su slotKey, no por sus equipos:
+     así, si después le cambiás el equipo, sigue siendo "esa misma casilla").              */
+  const idxPos=(fase,pos)=>S.borrador.findIndex(p=>p.slotKey===track+'|'+fase+'|'+pos);
 
   const rondas=[];
-  /* ronda 1: si ya hay partidos en el Sheet mandan ellos (en orden de creación); si no, la propuesta */
+  /* ronda 1: si ya hay partidos en el Sheet van primero (en orden de creación); si no, la propuesta.
+     Para cada posición: real del Sheet > editado en el borrador > propuesta de la tabla.    */
   const reales=[]; delSheet(f0).sort((a,b)=>idNum(a)-idNum(b)).forEach(p=>{
     if(!reales.some(q=>mismoCruce(q,p.local,p.visita))) reales.push(p); });
   const prop=paresPrimeraRonda(track);
-  let slots0;
-  if(reales.length){
-    slots0=reales.map(p=>({local:p.local,visita:p.visita,partido:p}));
-    /* si faltan partidos por crear, se completan con la propuesta de la tabla (sin repetir equipos) */
-    const usados=new Set(); reales.forEach(p=>{ usados.add(p.local); usados.add(p.visita); });
-    prop.forEach(([a,b])=>{ if(slots0.length<prop.length&&!usados.has(a)&&!usados.has(b))
-      slots0.push({local:a,visita:b,partido:null,proyectado:true}); });
-    while(slots0.length<prop.length) slots0.push({local:null,visita:null,partido:null,vacio:true});
-  } else {
-    slots0=prop.map(([a,b])=>({local:a,visita:b,partido:null,proyectado:true}));
-  }
+  const slots0=prop.map(([pa,pb],i)=>{
+    if(reales[i]) return {local:reales[i].local,visita:reales[i].visita,partido:reales[i],iBorrador:-1};
+    const bi=idxPos(f0,i);
+    if(bi>=0){ const b=S.borrador[bi]; return {local:b.local,visita:b.visita,partido:null,iBorrador:bi}; }
+    return {local:pa,visita:pb,partido:null,proyectado:true,iBorrador:-1};
+  });
   rondas.push({fase:f0,slots:slots0});
 
   /* rondas siguientes: de a dos partidos consecutivos de la ronda anterior */
   for(let r=1;r<fases.length;r++){
-    const prev=rondas[r-1].slots, slots=[];
-    for(let j=0;j+1<prev.length;j+=2){
-      const ra=resultadoDe(prev[j].partido), rb=resultadoDe(prev[j+1].partido);
-      const local=ra&&ra.g||null, visita=rb&&rb.g||null;
-      const partido=(local&&visita)? (delSheet(fases[r]).find(p=>mismoCruce(p,local,visita))||null) : null;
-      slots.push({local,visita,partido,
-        origen:[prev[j],prev[j+1]],
+    const prev=rondas[r-1].slots, slots=[], fase=fases[r];
+    for(let j=0;j*2+1<prev.length;j++){
+      const a=prev[j*2], b=prev[j*2+1];
+      const ra=resultadoDe(a.partido), rb=resultadoDe(b.partido);
+      const derLocal=ra&&ra.g||null, derVisita=rb&&rb.g||null;
+      const partido=(derLocal&&derVisita)? (delSheet(fase).find(p=>mismoCruce(p,derLocal,derVisita))||null) : null;
+      const bi=idxPos(fase,j);
+      let local=derLocal, visita=derVisita;
+      if(partido){ local=partido.local; visita=partido.visita; }
+      else if(bi>=0){ local=S.borrador[bi].local; visita=S.borrador[bi].visita; }
+      slots.push({local,visita,partido,iBorrador:partido?-1:bi,
+        origen:[a,b],
         esperando:(ra&&ra.empate)||(rb&&rb.empate)?'empate':null});
     }
-    rondas.push({fase:fases[r],slots});
+    rondas.push({fase,slots});
   }
-  /* etiquetas: O1…O8, C1…C4, S1, S2, FINAL */
-  rondas.forEach(R=>R.slots.forEach((s,j)=>{ s.etq=(R.fase==='FINAL')?'FINAL':INICIAL_RONDA[R.fase]+(j+1); }));
-  /* marco qué slots están listos para armar y cuáles ya están en el borrador */
-  rondas.forEach(R=>R.slots.forEach(s=>{
-    s.enBorrador=!!(s.local&&s.visita&&enBorrador(R.fase,s.local,s.visita));
+  /* etiquetas (O1…O8, C1…C4, S1, S2, FINAL), fase y posición de cada casilla */
+  rondas.forEach(R=>R.slots.forEach((s,j)=>{
+    s.etq=(R.fase==='FINAL')?'FINAL':INICIAL_RONDA[R.fase]+(j+1);
+    s.fase=R.fase; s.pos=j;
+    s.enBorrador=s.iBorrador>=0;
     s.listo=!!(s.local&&s.visita&&!s.partido&&!s.enBorrador);
   }));
 
-  /* tercer puesto: los perdedores de las semifinales */
+  /* tercer puesto: los perdedores de las semifinales (posición fija 0) */
   let tercero=null;
   const iSemi=fases.indexOf('SEMIFINAL');
   if(iSemi>=0&&rondas[iSemi].slots.length>=2){
     const [s1,s2]=rondas[iSemi].slots;
     const r1=resultadoDe(s1.partido), r2=resultadoDe(s2.partido);
-    const local=r1&&r1.p||null, visita=r2&&r2.p||null;
-    const partido=(local&&visita)? (delSheet('TERCER PUESTO').find(p=>mismoCruce(p,local,visita))||null) : null;
-    const enB=!!(local&&visita&&enBorrador('TERCER PUESTO',local,visita));
-    tercero={local,visita,partido,enBorrador:enB,listo:!!(local&&visita&&!partido&&!enB),origen:[s1,s2],perd:true};
+    const derLocal=r1&&r1.p||null, derVisita=r2&&r2.p||null;
+    const partido=(derLocal&&derVisita)? (delSheet('TERCER PUESTO').find(p=>mismoCruce(p,derLocal,derVisita))||null) : null;
+    const bi=idxPos('TERCER PUESTO',0);
+    let local=derLocal, visita=derVisita;
+    if(partido){ local=partido.local; visita=partido.visita; }
+    else if(bi>=0){ local=S.borrador[bi].local; visita=S.borrador[bi].visita; }
+    tercero={local,visita,partido,fase:'TERCER PUESTO',pos:0,iBorrador:partido?-1:bi,enBorrador:!partido&&bi>=0,
+      listo:!!(local&&visita&&!partido&&bi<0),origen:[s1,s2],perd:true};
   }
   return {rondas,tercero};
 }
@@ -1484,24 +1500,44 @@ function tabPlanificar(){
 /* ---------- FASES FINALES ---------- */
 /* Un cruce de la llave: dos equipos (o "Gan. O1" mientras no se sabe), el marcador si ya se jugó,
    y una etiqueta de estado (fecha, en borrador, listo para armar, penales pendientes…). */
-function tieLlave(s,etq){
+function tieLlave(s,etq,track){
   const p=s.partido, jugado=!!(p&&p.jugado);
   const r=jugado? resultadoDe(p) : null, pen=jugado? penales(p) : null;
   const esp=(i)=> s.origen? (s.perd?'Perd. ':'Gan. ')+s.origen[i].etq : '—';
-  const fila=(eq,i,gol,pn,gana)=>'<div class="s'+(gana?' w':'')+'">'+
-    (eq? '<b>'+esc(corto(eq))+'</b>' : '<b style="color:var(--muted);font-weight:500">'+esc(esp(i))+'</b>')+
-    '<span class="g">'+(gol==null?'-':gol)+(pn!=null?' <span class="muted" style="font-size:11px">('+pn+')</span>':'')+'</span></div>';
+  /* ¿se puede cambiar quién juega contra quién? Sí, mientras el cruce solo exista en el
+     borrador (todavía no se subió al Sheet ni se jugó). Reusa los mismos selects y el
+     mismo binding [data-edit] que la tabla de Borrador en Planificar.                  */
+  const editable = !p && s.enBorrador;
+  const bEntry = editable? S.borrador[s.iBorrador] : null;
+  const puedeAdelantar = !p && !editable && s.local && s.visita;    /* todavía no está en el borrador */
+  const claveAdelantar = puedeAdelantar? [track,s.fase,s.pos,s.local,s.visita].join('||') : '';
+
+  const fila=(eq,i,gol,pn,gana)=>{
+    if(editable){
+      const campo=i===0?'local':'visita';
+      return '<div class="s"><select data-edit="'+campo+'" data-i="'+s.iBorrador+
+        '" style="max-width:160px">'+opcionesEquipos(bEntry.categoria,bEntry.fase,bEntry[campo])+
+        '</select><span class="g">-</span></div>';
+    }
+    return '<div class="s'+(gana?' w':'')+'">'+
+      (eq? '<b>'+esc(corto(eq))+'</b>' : '<b style="color:var(--muted);font-weight:500">'+esc(esp(i))+'</b>')+
+      '<span class="g">'+(gol==null?'-':gol)+(pn!=null?' <span class="muted" style="font-size:11px">('+pn+')</span>':'')+'</span></div>';
+  };
   let estado='';
   if(p&&p.jugado) estado = (r&&r.empate)? '<span class="tag r">empate: faltan penales</span>' : '';
   else if(p) estado = (has(p.fecha)||has(p.hora))
     ? '<span style="color:var(--ambar)">'+esc([has(p.fecha)?fechaTxt(p.fecha):'',has(p.hora)?hora12(p.hora):''].filter(Boolean).join(' · '))+'</span>'
     : '<span class="tag a">sin fecha</span>';
-  else if(s.enBorrador) estado='<span class="tag a">en borrador</span>';
+  else if(editable) estado='<span class="tag a">en borrador</span>';
   else if(s.listo) estado = s.proyectado? '<span class="tag">provisional</span>' : '<span class="tag v">listo para armar</span>';
   return '<div class="tie"><div class="lbl" style="display:flex;justify-content:space-between;gap:8px"><span>'+
     esc(etq||s.etq||'')+'</span><span style="text-transform:none;letter-spacing:0">'+estado+'</span></div>'+
     fila(s.local,0,jugado?p.gl:null,pen?pen[0]:null,r&&r.g===s.local&&s.local)+
-    fila(s.visita,1,jugado?p.gv:null,pen?pen[1]:null,r&&r.g===s.visita&&s.visita)+'</div>';
+    fila(s.visita,1,jugado?p.gv:null,pen?pen[1]:null,r&&r.g===s.visita&&s.visita)+
+    (puedeAdelantar? '<button class="btn sm noprint" data-cruceunico="'+esc(claveAdelantar)+
+      '" title="Lo manda al borrador para poder elegir otros equipos" style="width:100%;border-radius:0;'+
+      'border-top:1px solid var(--line);background:transparent">✎ Cambiar equipos</button>' : '')+
+    '</div>';
 }
 
 /* La llave completa de una categoría: una columna por ronda, hasta la final. */
@@ -1514,11 +1550,10 @@ function cardLlave(track,titulo){
     return '<div class="col"><h4>'+(R.fase==='FINAL'?'FINAL':R.fase)+'</h4>'+
       (listos? '<button class="btn sm amb noprint" data-ronda="'+track+'|'+R.fase+'">+ Armar '+
         (R.fase==='FINAL'&&L.tercero&&L.tercero.listo?'final y 3.º':R.fase.toLowerCase())+' ('+listos+')</button>':'')+
-      R.slots.map(s=>tieLlave(s)).join('')+(extra||'')+'</div>';
+      R.slots.map(s=>tieLlave(s,null,track)).join('')+(extra||'')+'</div>';
   };
   const terceroHTML = L.tercero? '<h4 style="margin-top:6px">TERCER PUESTO</h4>'+
-    tieLlave({local:L.tercero.local,visita:L.tercero.visita,partido:L.tercero.partido,enBorrador:L.tercero.enBorrador,
-      listo:L.tercero.listo,origen:L.tercero.origen,perd:true,etq:'3.º PUESTO'},'3.º PUESTO') : '';
+    tieLlave(L.tercero,'3.º PUESTO',track) : '';
   const provisional = R0.slots.some(s=>s.proyectado);
   return '<div class="card" style="margin-bottom:14px"><h2>Llave · '+esc(titulo)+
     ' <span class="sub">'+(provisional?'cruces provisionales con la tabla de hoy':'según los partidos programados')+'</span>'+
@@ -1526,7 +1561,9 @@ function cardLlave(track,titulo){
     ayuda('apLlave'+track,'Cada ronda sale de los <b>ganadores</b> de la anterior, de a dos partidos seguidos de la llave. '+
       'Los favoritos quedan en lados opuestos: el 1º de cada grupo solo se puede cruzar con el otro en la <b>final</b>. '+
       'Si un partido termina empatado hay que anotar los <b>penales</b> (Planificar → partidos programados), '+
-      'si no, no se sabe quién avanza. Los cruces armados se pueden cambiar a mano en el borrador.')+
+      'si no, no se sabe quién avanza. Para <b>cambiar quién se cruza con quién</b>: si el cruce ya está en '+
+      'el borrador, tocá cualquiera de los dos equipos y elegí otro de la lista; si todavía no está armado, '+
+      'tocá <b>✎ Cambiar equipos</b> para habilitarlo.')+
     '<div class="pad"><div class="brk">'+
     L.rondas.map((R,i)=>col(R,i===L.rondas.length-1? terceroHTML : '')).join('')+
     '</div></div></div>';
@@ -1839,10 +1876,11 @@ function enlazar(){
   const cl=$('#btnClear'); if(cl) cl.onclick=()=>{ if(confirm('¿Vaciar el borrador?')){ S.borrador=[]; guardarBorrador(); render(); } };
   document.querySelectorAll('[data-ronda]').forEach(b=>b.onclick=()=>{ const [t,f]=b.dataset.ronda.split('|'); mandarRonda(t,f); });
   document.querySelectorAll('[data-irfases]').forEach(b=>b.onclick=()=>{ S.tab='fases'; render(); window.scrollTo({top:0,behavior:'smooth'}); });
+  document.querySelectorAll('[data-cruceunico]').forEach(b=>b.onclick=()=>enviarCrucePuntual(b.dataset.cruceunico));
 
-  /* borrador: editar en la misma tabla */
+  /* borrador: editar en la misma tabla (o en la llave de Fases finales, que usa lo mismo) */
   document.querySelectorAll('[data-edit]').forEach(inp=>inp.onchange=()=>{
-    S.borrador[+inp.dataset.i][inp.dataset.edit]=inp.value; guardarBorrador();
+    S.borrador[+inp.dataset.i][inp.dataset.edit]=inp.value; guardarBorrador(); render();
   });
   const ba=$('#blkAplicar'); if(ba) ba.onclick=aplicarBloque;
   const bs=$('#btnSaveApi'); if(bs) bs.onclick=guardarBorradorSheet;
@@ -1979,28 +2017,43 @@ function generarJornada(){
    - Conserva lo que ya tenga fecha u hora: eso es trabajo del usuario.
    - No repite cruces que ya están en el Sheet.
    Devuelve cuántos cruces nuevos quedaron en el borrador.                       */
-function enviarTanda(track,fase,pares){
+/* Cada fila que manda al borrador queda etiquetada con slotKey = "track|fase|posición".
+   Es la posición EN LA LLAVE (A1-B8 es la posición 0, A2-B7 la 1…), no los equipos que
+   tiene en ese momento: así, si después cambiás el equipo, la fila sigue siendo "esa
+   misma casilla de la llave" en vez de perderse.                                       */
+function enviarTanda(track,fase,items){           /* items: [{pos, local, visita}, …] */
   const categoria=catPartido(catTrack(track),fase);                 /* HOMBRES o FEMENINO */
   const mismaTanda = p => p.fase===fase && esDeTrack(p,track);
-  const conservados = S.borrador.filter(p=>mismaTanda(p)&&(has(p.fecha)||has(p.hora)))
-    .map(p=>({...p,categoria}));
+  const actuales={}; S.borrador.filter(mismaTanda).forEach(p=>{ if(p.slotKey) actuales[p.slotKey]=p; });
   S.borrador = S.borrador.filter(p=>!mismaTanda(p));
   const enSheet = (x,y) => S.partidos.some(p=>mismaTanda(p)&&mismoCruce(p,x,y));
 
-  /* lista final en el orden de la llave: el conservado en su lugar, el nuevo donde corresponda */
   const lista=[]; let nuevos=0;
-  pares.forEach(([x,y])=>{
-    if(enSheet(x,y)) return;
-    const c=conservados.find(q=>mismoCruce(q,x,y));
-    if(c) lista.push(c);
-    else { lista.push({categoria,fase,jornada:'',fecha:'',hora:'',cancha:'',local:x,visita:y}); nuevos++; }
+  items.forEach(({pos,local,visita})=>{
+    const key=track+'|'+fase+'|'+pos, prev=actuales[key];
+    /* si ya tenía fecha/hora puesta (trabajo tuyo) o el equipo lo cambiaste a mano, se conserva tal cual */
+    if(prev&&(has(prev.fecha)||has(prev.hora)||prev.local!==local||prev.visita!==visita)){ lista.push(prev); return; }
+    if(enSheet(local,visita)) return;                      /* ese cruce ya está jugado/programado en el Sheet */
+    lista.push({categoria,fase,jornada:'',fecha:'',hora:'',cancha:'',local,visita,slotKey:key});
+    nuevos++;
   });
-  conservados.forEach(c=>{ if(!lista.includes(c)) lista.push(c); });  /* los que armó a mano */
-
   const nid=nextId();                         /* después de limpiar, para no saltar números */
   lista.forEach((p,i)=>S.borrador.push({...p,id:nid(i+1)}));
   guardarBorrador();
   return nuevos;
+}
+
+/* Manda al borrador UN solo cruce (desde la llave, antes de armar toda la ronda), para
+   poder elegirle otros equipos ahí mismo sin tocar los demás cruces de esa ronda.        */
+function enviarCrucePuntual(clave){
+  const [track,fase,pos,local,visita]=clave.split('||');
+  const key=track+'|'+fase+'|'+pos;
+  if(S.borrador.some(p=>p.slotKey===key)) return;
+  const categoria=catPartido(catTrack(track),fase);
+  const nid=nextId();
+  S.borrador.push({id:nid(1),categoria,fase,jornada:'',fecha:'',hora:'',cancha:'',local,visita,slotKey:key});
+  guardarBorrador(); render();
+  toast('Cruce agregado al borrador, ya podés elegir otros equipos');
 }
 
 /* Arma en el borrador una ronda de la llave. Para la primera usa la tabla actual; para las
@@ -2010,12 +2063,14 @@ function mandarRonda(track,fase){
   const fases = (fase==='FINAL'&&L.tercero) ? ['FINAL','TERCER PUESTO'] : [fase];
   let total=0; const hechas=[];
   fases.forEach(f=>{
-    let pares;
-    if(f==='TERCER PUESTO') pares=(L.tercero&&L.tercero.local&&L.tercero.visita)?[[L.tercero.local,L.tercero.visita]]:[];
+    let items;
+    if(f==='TERCER PUESTO') items=(L.tercero&&L.tercero.local&&L.tercero.visita)?[{pos:0,local:L.tercero.local,visita:L.tercero.visita}]:[];
     else { const R=L.rondas.find(r=>r.fase===f);
-           pares=R? R.slots.filter(s=>s.local&&s.visita).map(s=>[s.local,s.visita]) : []; }
-    if(!pares.length) return;
-    total+=enviarTanda(track,f,pares); hechas.push(f);
+           /* el .map va ANTES del .filter: así s.pos sigue siendo la posición real en la llave
+              aunque alguna otra casilla de la ronda todavía no tenga equipos.                 */
+           items=R? R.slots.map(s=>({pos:s.pos,local:s.local,visita:s.visita})).filter(x=>x.local&&x.visita) : []; }
+    if(!items.length) return;
+    total+=enviarTanda(track,f,items); hechas.push(f);
   });
   if(!hechas.length){ toast('Todavía no hay cruces listos para '+fase); return; }
   S.tab='planificar'; render();
