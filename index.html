@@ -537,6 +537,123 @@ const equiposPara = (cat,fase) =>
   : (cat==='HOMBRES'||(fase&&fase!=='GRUPOS')) ? equiposDe('GRUPO A').concat(equiposDe('GRUPO B'))
   : equiposDe(cat);
 
+/* ══════════════════ LLAVE DE ELIMINATORIAS ══════════════════
+   Octavos → cuartos → semifinal → final (+ tercer puesto). Cada ronda sale de los
+   ganadores de la anterior, de a dos partidos consecutivos de la llave.            */
+const RONDAS=['OCTAVOS','CUARTOS','SEMIFINAL','FINAL'];
+const INICIAL_RONDA={OCTAVOS:'OCT ',CUARTOS:'CUA ',SEMIFINAL:'SEM ',FINAL:'FINAL '};
+
+/* Orden estándar de una llave de m partidos (m potencia de 2): los mejores sembrados
+   quedan lo más lejos posible entre sí. Para m=4 da [0,3,1,2] = 1v8, 4v5, 2v7, 3v6. */
+function ordenLlave(m){
+  if(m<1||(m&(m-1))) return Array.from({length:m},(_,i)=>i);      /* no es potencia de 2 */
+  let b=[1,2];
+  while(b.length<2*m){ const T=b.length*2; b=b.flatMap(s=>[s,T+1-s]); }
+  const out=[]; for(let i=0;i<b.length;i+=2) out.push(Math.min(b[i],b[i+1])-1);
+  return out;
+}
+/* Hombres (dos grupos de n): A1-B8, A2-B7… son los "partidos" i=0..n-1. Una mitad de la llave
+   lleva a los mejores del A contra los peores del B, y la otra mitad lo contrario.     */
+function ordenHombres(n){
+  if(n<2||(n&(n-1))) return Array.from({length:n},(_,i)=>i);
+  const h=ordenLlave(n/2);
+  return h.concat(h.map(j=>n-1-j));
+}
+const esDeTrack = (p,track) => track==='H' ? p.categoria!=='FEMENINO' : p.categoria==='FEMENINO';
+const catTrack  = track => track==='H' ? 'GRUPO A' : 'FEMENINO';        /* para catPartido() */
+const mismoCruce = (p,x,y) => (p.local===x&&p.visita===y)||(p.local===y&&p.visita===x);
+const idNum = p => +String(p.id).replace(/\D/g,'')||0;
+
+/* Los penales se guardan en OBS como "PEN 4-3" (local-visita). */
+function penales(p){
+  const m=String(p&&p.obs||'').match(/PEN\w*\.?\s*(\d+)\s*[-–:]\s*(\d+)/i);
+  return m? [+m[1],+m[2]] : null;
+}
+/* Quién avanza: {g:ganador, p:perdedor}, {empate:true} si falta definir, o null si no se jugó. */
+function resultadoDe(p){
+  if(!p||!p.jugado) return null;
+  if(p.gl>p.gv) return {g:p.local,p:p.visita};
+  if(p.gv>p.gl) return {g:p.visita,p:p.local};
+  const pen=penales(p);
+  if(pen&&pen[0]>pen[1]) return {g:p.local,p:p.visita};
+  if(pen&&pen[1]>pen[0]) return {g:p.visita,p:p.local};
+  return {empate:true};
+}
+
+/* Primera ronda según la tabla actual, en el orden de la llave. */
+function paresPrimeraRonda(track){
+  if(track==='H'){
+    const n=clasN('GRUPO A'), A=tabla('GRUPO A'), B=tabla('GRUPO B');
+    return ordenHombres(n).map(i=>(A[i]&&B[n-1-i])?[A[i].equipo,B[n-1-i].equipo]:null).filter(Boolean);
+  }
+  const nf=clasN('FEMENINO'), F=tabla('FEMENINO'), m=Math.floor(nf/2);
+  const orden=(m&(m-1))?Array.from({length:m},(_,i)=>i):ordenLlave(m);
+  return orden.map(i=>(F[i]&&F[nf-1-i])?[F[i].equipo,F[nf-1-i].equipo]:null).filter(Boolean);
+}
+const faseInicial = track => faseDe(track==='H' ? clasN('GRUPO A')*2 : clasN('FEMENINO'));
+
+/* Arma la llave completa de hombres ('H') o femenino ('F'), mezclando lo que ya existe en el
+   Sheet con lo que falta por armar. Devuelve {rondas:[{fase,slots}], tercero}. */
+function armarLlave(track){
+  const f0=faseInicial(track), i0=RONDAS.indexOf(f0);
+  if(i0<0) return {rondas:[],tercero:null};
+  const fases=RONDAS.slice(i0);
+  const enBorrador=(fase,x,y)=>S.borrador.some(p=>p.fase===fase&&esDeTrack(p,track)&&mismoCruce(p,x,y));
+  const delSheet=fase=>S.partidos.filter(p=>p.fase===fase&&esDeTrack(p,track));
+
+  const rondas=[];
+  /* ronda 1: si ya hay partidos en el Sheet mandan ellos (en orden de creación); si no, la propuesta */
+  const reales=[]; delSheet(f0).sort((a,b)=>idNum(a)-idNum(b)).forEach(p=>{
+    if(!reales.some(q=>mismoCruce(q,p.local,p.visita))) reales.push(p); });
+  const prop=paresPrimeraRonda(track);
+  let slots0;
+  if(reales.length){
+    slots0=reales.map(p=>({local:p.local,visita:p.visita,partido:p}));
+    /* si faltan partidos por crear, se completan con la propuesta de la tabla (sin repetir equipos) */
+    const usados=new Set(); reales.forEach(p=>{ usados.add(p.local); usados.add(p.visita); });
+    prop.forEach(([a,b])=>{ if(slots0.length<prop.length&&!usados.has(a)&&!usados.has(b))
+      slots0.push({local:a,visita:b,partido:null,proyectado:true}); });
+    while(slots0.length<prop.length) slots0.push({local:null,visita:null,partido:null,vacio:true});
+  } else {
+    slots0=prop.map(([a,b])=>({local:a,visita:b,partido:null,proyectado:true}));
+  }
+  rondas.push({fase:f0,slots:slots0});
+
+  /* rondas siguientes: de a dos partidos consecutivos de la ronda anterior */
+  for(let r=1;r<fases.length;r++){
+    const prev=rondas[r-1].slots, slots=[];
+    for(let j=0;j+1<prev.length;j+=2){
+      const ra=resultadoDe(prev[j].partido), rb=resultadoDe(prev[j+1].partido);
+      const local=ra&&ra.g||null, visita=rb&&rb.g||null;
+      const partido=(local&&visita)? (delSheet(fases[r]).find(p=>mismoCruce(p,local,visita))||null) : null;
+      slots.push({local,visita,partido,
+        origen:[prev[j],prev[j+1]],
+        esperando:(ra&&ra.empate)||(rb&&rb.empate)?'empate':null});
+    }
+    rondas.push({fase:fases[r],slots});
+  }
+  /* etiquetas: O1…O8, C1…C4, S1, S2, FINAL */
+  rondas.forEach(R=>R.slots.forEach((s,j)=>{ s.etq=(R.fase==='FINAL')?'FINAL':INICIAL_RONDA[R.fase]+(j+1); }));
+  /* marco qué slots están listos para armar y cuáles ya están en el borrador */
+  rondas.forEach(R=>R.slots.forEach(s=>{
+    s.enBorrador=!!(s.local&&s.visita&&enBorrador(R.fase,s.local,s.visita));
+    s.listo=!!(s.local&&s.visita&&!s.partido&&!s.enBorrador);
+  }));
+
+  /* tercer puesto: los perdedores de las semifinales */
+  let tercero=null;
+  const iSemi=fases.indexOf('SEMIFINAL');
+  if(iSemi>=0&&rondas[iSemi].slots.length>=2){
+    const [s1,s2]=rondas[iSemi].slots;
+    const r1=resultadoDe(s1.partido), r2=resultadoDe(s2.partido);
+    const local=r1&&r1.p||null, visita=r2&&r2.p||null;
+    const partido=(local&&visita)? (delSheet('TERCER PUESTO').find(p=>mismoCruce(p,local,visita))||null) : null;
+    const enB=!!(local&&visita&&enBorrador('TERCER PUESTO',local,visita));
+    tercero={local,visita,partido,enBorrador:enB,listo:!!(local&&visita&&!partido&&!enB),origen:[s1,s2],perd:true};
+  }
+  return {rondas,tercero};
+}
+
 /* <option>s de un desplegable de equipos. Si el valor actual NO está en la lista se
    agrega igual: antes, al faltar, el desplegable mostraba OTRO equipo sin avisar
    (por eso todos los rivales aparecían como "NAULA AVILA").                      */
@@ -1217,7 +1334,7 @@ function tabPlanificar(){
   const jornadas=[...new Set(partidosDe(cat).map(p=>p.jornada).filter(has))].sort((a,b)=>a-b);
   const sigJ=(jornadas.length?Math.max(...jornadas):0)+1;
 
-  let h='<div class="card" style="margin-bottom:14px"><h2>1 · Cruces que faltan '+
+  let h=cardEliminatorias()+'<div class="card" style="margin-bottom:14px"><h2>1 · Cruces que faltan '+
     '<span class="sub">'+pendientes.length+' de '+P.length+' sin programar</span>'+
     botonAyuda('apPlan')+'</h2>'+
     ayuda('apPlan',
@@ -1302,6 +1419,7 @@ function tabPlanificar(){
       (a.fecha||'zz').localeCompare(b.fecha||'zz')||(a.hora||'zz').localeCompare(b.hora||'zz')||
       (a.jornada||0)-(b.jornada||0)||a.id.localeCompare(b.id));
   const sinJugar=S.partidos.filter(p=>!p.jugado).length;
+  const hayElim=prog.some(p=>p.fase!=='GRUPOS');          /* columna de penales solo si hace falta */
   const cambios=Object.keys(S.editPartidos).length;
   h+='<div class="card" style="margin-bottom:14px"><h2>4 · Partidos programados '+
     '<span class="sub">'+sinJugar+' sin jugar · todas las categorías</span>'+
@@ -1313,7 +1431,7 @@ function tabPlanificar(){
       'GV = del visitante) y pasa a jugado. Los goleadores se cargan en la pestaña <b>Goleadores</b>. '+
       'La <b>✕</b> borra el partido del Sheet, por si se canceló o se cargó por error.')+
     (prog.length? '<div class="tw"><table><thead><tr><th>ID</th><th>Cat.</th><th class="n">J</th><th>Partido</th>'+
-      '<th>Fecha</th><th>Hora</th><th class="n">GL</th><th class="n">GV</th><th>Estado</th>'+
+      '<th>Fecha</th><th>Hora</th><th class="n">GL</th><th class="n">GV</th>'+(hayElim?'<th class="n">Penales</th>':'')+'<th>Estado</th>'+
       (hayAPI()?'<th class="noprint"></th>':'')+'</tr></thead><tbody>'+
       prog.map(p=>{
         const c=S.editPartidos[p.id]||{};
@@ -1322,6 +1440,12 @@ function tabPlanificar(){
         const gl=c.gl!==undefined?c.gl:(p.gl==null?'':p.gl);
         const gv=c.gv!==undefined?c.gv:(p.gv==null?'':p.gv);
         const conMarcador=has(gl)&&has(gv);
+        /* eliminatoria empatada: hay que anotar los penales para saber quién avanza */
+        const esEmp=p.fase!=='GRUPOS'&&conMarcador&&num(gl)===num(gv);
+        const penO=penales(p)||[];
+        const pl=c.pl!==undefined?c.pl:(penO[0]==null?'':penO[0]);
+        const pv=c.pv!==undefined?c.pv:(penO[1]==null?'':penO[1]);
+        const penOk=has(pl)&&has(pv)&&num(pl)!==num(pv);
         return '<tr'+(S.editPartidos[p.id]?' style="box-shadow:inset 3px 0 0 var(--ambar)"':'')+'>'+
           '<td class="b">'+esc(p.id)+'</td>'+
           '<td><span class="tag">'+p.categoria.replace('GRUPO ','').replace('FEMENINO','FEM')+'</span></td>'+
@@ -1331,7 +1455,11 @@ function tabPlanificar(){
           '<td><input type="time" data-ep="hora" data-id="'+esc(p.id)+'" value="'+esc(ho)+'" style="min-width:96px"></td>'+
           '<td class="n"><input type="number" min="0" data-ep="gl" data-id="'+esc(p.id)+'" value="'+esc(gl)+'" style="width:56px;text-align:center"></td>'+
           '<td class="n"><input type="number" min="0" data-ep="gv" data-id="'+esc(p.id)+'" value="'+esc(gv)+'" style="width:56px;text-align:center"></td>'+
-          '<td>'+(S.editPartidos[p.id]&&conMarcador&&!p.jugado?'<span class="tag v">pasa a jugado</span>'
+          (hayElim? '<td class="n" style="white-space:nowrap">'+(esEmp?
+            '<input type="number" min="0" data-ep="pl" data-id="'+esc(p.id)+'" value="'+esc(pl)+'" style="width:46px;text-align:center"> - '+
+            '<input type="number" min="0" data-ep="pv" data-id="'+esc(p.id)+'" value="'+esc(pv)+'" style="width:46px;text-align:center">':'')+'</td>' : '')+
+          '<td>'+(esEmp&&!penOk?'<span class="tag r">empate: poné los penales</span>'
+            :S.editPartidos[p.id]&&conMarcador&&!p.jugado?'<span class="tag v">pasa a jugado</span>'
             :p.jugado?'<span class="tag">jugado</span>'
             :p.estado==='SUSPENDIDO'?'<span class="tag r">suspendido</span>'
             :has(f)?'<span class="tag v">con fecha</span>':'<span class="tag a">sin fecha</span>')+'</td>'+
@@ -1354,48 +1482,92 @@ function tabPlanificar(){
 }
 
 /* ---------- FASES FINALES ---------- */
+/* Un cruce de la llave: dos equipos (o "Gan. O1" mientras no se sabe), el marcador si ya se jugó,
+   y una etiqueta de estado (fecha, en borrador, listo para armar, penales pendientes…). */
+function tieLlave(s,etq){
+  const p=s.partido, jugado=!!(p&&p.jugado);
+  const r=jugado? resultadoDe(p) : null, pen=jugado? penales(p) : null;
+  const esp=(i)=> s.origen? (s.perd?'Perd. ':'Gan. ')+s.origen[i].etq : '—';
+  const fila=(eq,i,gol,pn,gana)=>'<div class="s'+(gana?' w':'')+'">'+
+    (eq? '<b>'+esc(corto(eq))+'</b>' : '<b style="color:var(--muted);font-weight:500">'+esc(esp(i))+'</b>')+
+    '<span class="g">'+(gol==null?'-':gol)+(pn!=null?' <span class="muted" style="font-size:11px">('+pn+')</span>':'')+'</span></div>';
+  let estado='';
+  if(p&&p.jugado) estado = (r&&r.empate)? '<span class="tag r">empate: faltan penales</span>' : '';
+  else if(p) estado = (has(p.fecha)||has(p.hora))
+    ? '<span style="color:var(--ambar)">'+esc([has(p.fecha)?fechaTxt(p.fecha):'',has(p.hora)?hora12(p.hora):''].filter(Boolean).join(' · '))+'</span>'
+    : '<span class="tag a">sin fecha</span>';
+  else if(s.enBorrador) estado='<span class="tag a">en borrador</span>';
+  else if(s.listo) estado = s.proyectado? '<span class="tag">provisional</span>' : '<span class="tag v">listo para armar</span>';
+  return '<div class="tie"><div class="lbl" style="display:flex;justify-content:space-between;gap:8px"><span>'+
+    esc(etq||s.etq||'')+'</span><span style="text-transform:none;letter-spacing:0">'+estado+'</span></div>'+
+    fila(s.local,0,jugado?p.gl:null,pen?pen[0]:null,r&&r.g===s.local&&s.local)+
+    fila(s.visita,1,jugado?p.gv:null,pen?pen[1]:null,r&&r.g===s.visita&&s.visita)+'</div>';
+}
+
+/* La llave completa de una categoría: una columna por ronda, hasta la final. */
+function cardLlave(track,titulo){
+  const L=armarLlave(track);
+  if(!L.rondas.length) return '';
+  const R0=L.rondas[0];
+  const col=(R,extra)=>{
+    const listos=R.slots.filter(s=>s.listo).length + (R.fase==='FINAL'&&L.tercero&&L.tercero.listo?1:0);
+    return '<div class="col"><h4>'+(R.fase==='FINAL'?'FINAL':R.fase)+'</h4>'+
+      (listos? '<button class="btn sm amb noprint" data-ronda="'+track+'|'+R.fase+'">+ Armar '+
+        (R.fase==='FINAL'&&L.tercero&&L.tercero.listo?'final y 3.º':R.fase.toLowerCase())+' ('+listos+')</button>':'')+
+      R.slots.map(s=>tieLlave(s)).join('')+(extra||'')+'</div>';
+  };
+  const terceroHTML = L.tercero? '<h4 style="margin-top:6px">TERCER PUESTO</h4>'+
+    tieLlave({local:L.tercero.local,visita:L.tercero.visita,partido:L.tercero.partido,enBorrador:L.tercero.enBorrador,
+      listo:L.tercero.listo,origen:L.tercero.origen,perd:true,etq:'3.º PUESTO'},'3.º PUESTO') : '';
+  const provisional = R0.slots.some(s=>s.proyectado);
+  return '<div class="card" style="margin-bottom:14px"><h2>Llave · '+esc(titulo)+
+    ' <span class="sub">'+(provisional?'cruces provisionales con la tabla de hoy':'según los partidos programados')+'</span>'+
+    botonAyuda('apLlave'+track)+'</h2>'+
+    ayuda('apLlave'+track,'Cada ronda sale de los <b>ganadores</b> de la anterior, de a dos partidos seguidos de la llave. '+
+      'Los favoritos quedan en lados opuestos: el 1º de cada grupo solo se puede cruzar con el otro en la <b>final</b>. '+
+      'Si un partido termina empatado hay que anotar los <b>penales</b> (Planificar → partidos programados), '+
+      'si no, no se sabe quién avanza. Los cruces armados se pueden cambiar a mano en el borrador.')+
+    '<div class="pad"><div class="brk">'+
+    L.rondas.map((R,i)=>col(R,i===L.rondas.length-1? terceroHTML : '')).join('')+
+    '</div></div></div>';
+}
+
+/* Resumen de las eliminatorias dentro de Planificar: en qué ronda va cada categoría y qué
+   cruces ya se pueden armar. Aparece cuando ya existe algún partido de eliminatoria. */
+function cardEliminatorias(){
+  const filas=[];
+  [['H','Hombres'],['F','Femenino']].forEach(([track,nombre])=>{
+    const hay=S.partidos.some(p=>p.fase!=='GRUPOS'&&esDeTrack(p,track))||
+              S.borrador.some(p=>p.fase!=='GRUPOS'&&esDeTrack(p,track));
+    if(!hay) return;
+    const L=armarLlave(track);
+    let accion=null; const chips=[];
+    L.rondas.forEach(R=>{
+      const total=R.slots.length;
+      const jugados=R.slots.filter(s=>s.partido&&s.partido.jugado).length;
+      const progr=R.slots.filter(s=>s.partido&&!s.partido.jugado).length;
+      const listos=R.slots.filter(s=>s.listo).length + (R.fase==='FINAL'&&L.tercero&&L.tercero.listo?1:0);
+      const empates=R.slots.filter(s=>s.partido&&s.partido.jugado&&resultadoDe(s.partido)&&resultadoDe(s.partido).empate).length;
+      if(!jugados&&!progr&&!listos&&!R.slots.some(s=>s.enBorrador)) return;
+      chips.push('<span class="tag'+(jugados===total&&total?' v':'')+'">'+R.fase+' '+jugados+'/'+total+' jugados</span>'+
+        (listos?' <span class="tag v">'+listos+' listo'+(listos>1?'s':'')+' para armar</span>':'')+
+        (empates?' <span class="tag r">'+empates+' empate'+(empates>1?'s':'')+' sin penales</span>':''));
+      if(!accion&&listos) accion={fase:R.fase,listos,final:R.fase==='FINAL'&&L.tercero&&L.tercero.listo};
+    });
+    filas.push('<div class="pad" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--line)">'+
+      '<b style="min-width:84px">'+nombre+'</b><div style="flex:1 1 280px">'+chips.join(' &nbsp;·&nbsp; ')+'</div>'+
+      (accion? '<button class="btn sm amb noprint" data-ronda="'+track+'|'+accion.fase+'">+ Armar '+
+        (accion.final?'final y 3.º puesto':accion.fase.toLowerCase())+' ('+accion.listos+')</button>':'')+'</div>');
+  });
+  if(!filas.length) return '';
+  return '<div class="card" style="margin-bottom:14px"><h2>🏆 Fases finales <span class="sub">siguiente ronda según los resultados</span>'+
+    '<button class="btn sm noprint" data-irfases="1" style="margin-left:auto">Ver la llave</button></h2>'+filas.join('')+'</div>';
+}
+
 function tabFases(){
-  const n=clasN('GRUPO A');
+  const n=clasN('GRUPO A'), nf=clasN('FEMENINO');
   const A=tabla('GRUPO A'), B=tabla('GRUPO B'), F=tabla('FEMENINO');
-  const reales=S.partidos.filter(p=>p.fase!=='GRUPOS');
-  const cruces=[];
-  for(let i=0;i<n;i++){
-    const a=A[i], b=B[n-1-i];
-    if(a&&b) cruces.push({lbl:'A'+(i+1)+' vs B'+(n-i),local:a.equipo,visita:b.equipo});
-  }
-  const cf=[]; const nf=clasN('FEMENINO');
-  for(let i=0;i<Math.floor(nf/2);i++){
-    const a=F[i], b=F[nf-1-i];
-    if(a&&b) cf.push({lbl:'F'+(i+1)+' vs F'+(nf-i),local:a.equipo,visita:b.equipo});
-  }
-  const tie = (lbl,l,v,gl,gv)=>'<div class="tie"><div class="lbl">'+esc(lbl)+'</div>'+
-    '<div class="s'+(gl!=null&&gl>gv?' w':'')+'"><b>'+esc(corto(l))+'</b><span class="g">'+(gl==null?'-':gl)+'</span></div>'+
-    '<div class="s'+(gl!=null&&gv>gl?' w':'')+'"><b>'+esc(corto(v))+'</b><span class="g">'+(gv==null?'-':gv)+'</span></div></div>';
-
-  let h='';
-
-  if(reales.length){
-    const porFase={};
-    reales.forEach(p=>(porFase[p.fase]=porFase[p.fase]||[]).push(p));
-    h+='<div class="card" style="margin-bottom:14px"><h2>Fases finales en juego</h2>'+
-      FASES.filter(f=>porFase[f]).map(f=>'<div class="jhead"><h4>'+f+'</h4><span>'+porFase[f].length+' partidos</span></div>'+
-        porFase[f].map(p=>filaPartido(p,p.categoria)).join('')).join('')+'</div>';
-  }
-
-  h+='<div class="card" style="margin-bottom:14px"><h2>Cruces propuestos · hombres '+
-    '<span class="sub">top '+n+' de cada grupo</span></h2><div class="pad">'+
-    '<div class="brk"><div class="col"><h4>Llave</h4>'+
-      (cruces.length? cruces.map(c=>tie(c.lbl,c.local,c.visita,null,null)).join('') : '<div class="muted">Faltan datos</div>')+
-    '</div></div>'+
-    '<button class="btn amb noprint" id="btnCruces" data-tipo="H">+ Mandar al borrador como '+faseDe(n*2)+'</button>'+
-    '</div></div>'+
-    '<div class="card" style="margin-bottom:14px"><h2>Cruces propuestos · femenino <span class="sub">top '+nf+'</span></h2><div class="pad">'+
-    '<div class="brk"><div class="col"><h4>Llave</h4>'+
-      (cf.length? cf.map(c=>tie(c.lbl,c.local,c.visita,null,null)).join('') : '<div class="muted">Faltan datos</div>')+
-    '</div></div>'+
-    '<button class="btn amb noprint" id="btnCrucesF" data-tipo="F">+ Mandar al borrador como '+faseDe(nf)+'</button>'+
-    '</div></div>';
-
+  let h=cardLlave('H','Hombres')+cardLlave('F','Femenino');
   h+='<div class="grid g3">'+[['GRUPO A',A,n],['GRUPO B',B,n],['FEMENINO',F,nf]].map(([c,t,k])=>
     '<div class="card"><h3>Clasificados · '+c+'</h3><div class="tw"><table><tbody>'+
     t.slice(0,k).map((r,i)=>'<tr class="clasif"><td class="pos">'+(i+1)+'</td><td class="b">'+esc(corto(r.equipo))+'</td>'+
@@ -1665,8 +1837,8 @@ function enlazar(){
   const cp=$('#btnCopy'); if(cp) cp.onclick=()=>{ copiar(borradorTSV()); };
   const cs=$('#btnCsv'); if(cs) cs.onclick=descargarCSV;
   const cl=$('#btnClear'); if(cl) cl.onclick=()=>{ if(confirm('¿Vaciar el borrador?')){ S.borrador=[]; guardarBorrador(); render(); } };
-  const bc=$('#btnCruces'); if(bc) bc.onclick=()=>mandarCruces('H');
-  const bf=$('#btnCrucesF'); if(bf) bf.onclick=()=>mandarCruces('F');
+  document.querySelectorAll('[data-ronda]').forEach(b=>b.onclick=()=>{ const [t,f]=b.dataset.ronda.split('|'); mandarRonda(t,f); });
+  document.querySelectorAll('[data-irfases]').forEach(b=>b.onclick=()=>{ S.tab='fases'; render(); window.scrollTo({top:0,behavior:'smooth'}); });
 
   /* borrador: editar en la misma tabla */
   document.querySelectorAll('[data-edit]').forEach(inp=>inp.onchange=()=>{
@@ -1683,8 +1855,10 @@ function enlazar(){
     S.editPartidos[id][campo]=inp.value;
     /* si volvió a lo que ya estaba en el Sheet, dejo de contarlo como cambio */
     const c=S.editPartidos[id];
-    const orig={fecha:p.fecha,hora:p.hora,gl:p.gl==null?'':String(p.gl),gv:p.gv==null?'':String(p.gv)};
-    const igual=['fecha','hora','gl','gv'].every(k=>c[k]===undefined||String(c[k])===orig[k]);
+    const po=penales(p)||[];
+    const orig={fecha:p.fecha,hora:p.hora,gl:p.gl==null?'':String(p.gl),gv:p.gv==null?'':String(p.gv),
+      pl:po[0]==null?'':String(po[0]),pv:po[1]==null?'':String(po[1])};
+    const igual=['fecha','hora','gl','gv','pl','pv'].every(k=>c[k]===undefined||String(c[k])===orig[k]);
     if(igual) delete S.editPartidos[id];
     render();
   });
@@ -1800,47 +1974,53 @@ function generarJornada(){
   guardarBorrador(); render();
   toast(nuevos.length+' partidos armados para la jornada '+j);
 }
-function mandarCruces(tipo){
-  const A=tabla('GRUPO A'), B=tabla('GRUPO B'), F=tabla('FEMENINO');
-  const hombres=tipo==='H';
-  const n=clasN(hombres?'GRUPO A':'FEMENINO');
-  const fase=hombres? faseDe(n*2) : faseDe(n);
-  const categoria=catPartido(hombres?'GRUPO A':'FEMENINO',fase);   /* HOMBRES o FEMENINO */
-
-  /* los cruces: A1 vs B8, A2 vs B7… (hombres) o F1 vs F8, F2 vs F7… (femenino) */
-  const pares=[];
-  if(hombres){
-    for(let i=0;i<n;i++){ const a=A[i], b=B[n-1-i]; if(a&&b) pares.push([a.equipo,b.equipo]); }
-  } else {
-    for(let i=0;i<Math.floor(n/2);i++){ const a=F[i], b=F[n-1-i]; if(a&&b) pares.push([a.equipo,b.equipo]); }
-  }
-  if(!pares.length){ toast('No pude armar los cruces (faltan equipos)'); return; }
-
-  /* Cada clic antes AGREGABA otra tanda encima de la anterior. Ahora se reemplaza
-     la que ya estaba en el borrador para esta fase, así no se duplica.          */
-  const mismaTanda = p => p.fase===fase && (hombres? p.categoria!=='FEMENINO' : p.categoria==='FEMENINO');
-  /* …pero lo que ya tiene fecha u hora es trabajo tuyo: eso se conserva */
+/* Manda un grupo de cruces ("tanda") al borrador, en el orden de la llave.
+   - Reemplaza la tanda que ya estaba en el borrador para esta fase (no se apila).
+   - Conserva lo que ya tenga fecha u hora: eso es trabajo del usuario.
+   - No repite cruces que ya están en el Sheet.
+   Devuelve cuántos cruces nuevos quedaron en el borrador.                       */
+function enviarTanda(track,fase,pares){
+  const categoria=catPartido(catTrack(track),fase);                 /* HOMBRES o FEMENINO */
+  const mismaTanda = p => p.fase===fase && esDeTrack(p,track);
   const conservados = S.borrador.filter(p=>mismaTanda(p)&&(has(p.fecha)||has(p.hora)))
-    .map(p=>({...p, categoria}));
-  S.borrador = S.borrador.filter(p=>!mismaTanda(p)).concat(conservados);
+    .map(p=>({...p,categoria}));
+  S.borrador = S.borrador.filter(p=>!mismaTanda(p));
+  const enSheet = (x,y) => S.partidos.some(p=>mismaTanda(p)&&mismoCruce(p,x,y));
 
-  /* los que ya están en el Sheet, o ya conservados en el borrador, no se repiten */
-  const mismoCruce = (p,x,y) => (p.local===x&&p.visita===y)||(p.local===y&&p.visita===x);
-  const yaEsta = (x,y) => S.partidos.some(p=>mismaTanda(p)&&mismoCruce(p,x,y)) ||
-                          conservados.some(p=>mismoCruce(p,x,y));
-  const nuevos = pares.filter(([x,y])=>!yaEsta(x,y));
-  if(!nuevos.length){
-    guardarBorrador(); render();
-    toast('Esos cruces de '+fase+' ya están en el Sheet o en el borrador'); return;
-  }
+  /* lista final en el orden de la llave: el conservado en su lugar, el nuevo donde corresponda */
+  const lista=[]; let nuevos=0;
+  pares.forEach(([x,y])=>{
+    if(enSheet(x,y)) return;
+    const c=conservados.find(q=>mismoCruce(q,x,y));
+    if(c) lista.push(c);
+    else { lista.push({categoria,fase,jornada:'',fecha:'',hora:'',cancha:'',local:x,visita:y}); nuevos++; }
+  });
+  conservados.forEach(c=>{ if(!lista.includes(c)) lista.push(c); });  /* los que armó a mano */
 
-  const nid=nextId();                       /* después de limpiar, para no saltar números */
-  nuevos.forEach(([local,visita],i)=>S.borrador.push({
-    id:nid(i+1), categoria, fase, jornada:'', fecha:'', hora:'', cancha:'', local, visita }));
+  const nid=nextId();                         /* después de limpiar, para no saltar números */
+  lista.forEach((p,i)=>S.borrador.push({...p,id:nid(i+1)}));
   guardarBorrador();
+  return nuevos;
+}
+
+/* Arma en el borrador una ronda de la llave. Para la primera usa la tabla actual; para las
+   siguientes, los ganadores de la ronda anterior. La final va junto con el tercer puesto. */
+function mandarRonda(track,fase){
+  const L=armarLlave(track);
+  const fases = (fase==='FINAL'&&L.tercero) ? ['FINAL','TERCER PUESTO'] : [fase];
+  let total=0; const hechas=[];
+  fases.forEach(f=>{
+    let pares;
+    if(f==='TERCER PUESTO') pares=(L.tercero&&L.tercero.local&&L.tercero.visita)?[[L.tercero.local,L.tercero.visita]]:[];
+    else { const R=L.rondas.find(r=>r.fase===f);
+           pares=R? R.slots.filter(s=>s.local&&s.visita).map(s=>[s.local,s.visita]) : []; }
+    if(!pares.length) return;
+    total+=enviarTanda(track,f,pares); hechas.push(f);
+  });
+  if(!hechas.length){ toast('Todavía no hay cruces listos para '+fase); return; }
   S.tab='planificar'; render();
-  toast(nuevos.length+' cruces de '+fase+' en el borrador'+
-    (nuevos.length<pares.length?' ('+(pares.length-nuevos.length)+' ya estaban)':''));
+  toast(total? total+' cruce'+(total>1?'s':'')+' de '+hechas.join(' + ')+' en el borrador'
+              : 'Esos cruces de '+hechas.join(' + ')+' ya están en el Sheet o en el borrador');
 }
 function borradorTSV(){
   return S.borrador.map(p=>[p.id,p.categoria,p.fase,p.jornada,p.fecha,p.hora,p.cancha,p.local,'','',p.visita,'PENDIENTE','']
@@ -2148,10 +2328,25 @@ async function borrarPartido(id){
 }
 
 /* Manda al Sheet los cambios de fecha/hora de los partidos ya programados */
+/* Deja los penales en OBS como 'PEN 4-3' sin pisar otras notas que ya tenga el partido. */
+function obsConPenales(obs,pl,pv){
+  const base=String(obs||'').replace(/PEN\w*\.?\s*\d+\s*[-–:]\s*\d+/ig,'').trim();
+  return (base?base+' ':'')+'PEN '+pl+'-'+pv;
+}
 async function guardarReprogramacion(){
   const ids=Object.keys(S.editPartidos);
   if(!ids.length) return;
   if(S.guardando) return;
+  /* una eliminatoria empatada no se puede guardar sin penales: no se sabría quién avanza */
+  for(const id of ids){
+    const c=S.editPartidos[id], p=S.partidos.find(x=>x.id===id); if(!p) continue;
+    const gl=c.gl!==undefined?c.gl:(p.gl==null?'':p.gl), gv=c.gv!==undefined?c.gv:(p.gv==null?'':p.gv);
+    if(p.fase==='GRUPOS'||!has(gl)||!has(gv)||num(gl)!==num(gv)) continue;
+    const po=penales(p)||[];
+    const pl=c.pl!==undefined?c.pl:po[0], pv=c.pv!==undefined?c.pv:po[1];
+    if(!has(pl)||!has(pv)||num(pl)===num(pv)){
+      toast(corto(p.local)+' vs '+corto(p.visita)+': empataron, poné los penales (no pueden empatar)'); return; }
+  }
   S.guardando=true;
   try{
     bloqAbrir('Guardando '+ids.length+' partido'+(ids.length>1?'s':'')+'…',
@@ -2164,9 +2359,14 @@ async function guardarReprogramacion(){
       const gv=c.gv!==undefined?c.gv:(p.gv==null?'':p.gv);
       const pasaAJugado=has(gl)&&has(gv);
       if(pasaAJugado&&!p.jugado) jugados++;
+      const po=penales(p)||[];
+      const pl=c.pl!==undefined?c.pl:po[0], pv=c.pv!==undefined?c.pv:po[1];
+      const conPen=p.fase!=='GRUPOS'&&pasaAJugado&&num(gl)===num(gv)&&has(pl)&&has(pv);
       pedido[id]={ fecha:c.fecha!==undefined?c.fecha:p.fecha,
                    hora:c.hora!==undefined?c.hora:p.hora,
-                   gl, gv, estado: pasaAJugado?'JUGADO':'' };
+                   gl, gv, estado: pasaAJugado?'JUGADO':'',
+                   /* undefined no viaja: sin penales el OBS del partido no se toca */
+                   obs: conPen? obsConPenales(p.obs,pl,pv) : undefined, pl: conPen?pl:undefined, pv: conPen?pv:undefined };
     });
     /* Se mandan todos juntos, no de uno en uno: el Sheet los procesa en fila
        pero acá no esperamos entre cada uno.                                  */
@@ -2180,7 +2380,8 @@ async function guardarReprogramacion(){
       return (has(q.fecha)&&p.fecha!==q.fecha)
           || (has(q.hora)&&p.hora!==q.hora)
           || (has(q.gl)&&String(p.gl)!==String(q.gl))
-          || (has(q.gv)&&String(p.gv)!==String(q.gv));
+          || (has(q.gv)&&String(p.gv)!==String(q.gv))
+          || (has(q.pl)&&(()=>{ const pn=penales(p); return !pn||pn[0]!==num(q.pl)||pn[1]!==num(q.pv); })());
     };
     bloqTexto('Verificando…','Estoy releyendo el Sheet para confirmar que quedó todo.');
     let faltan=ids;
@@ -2194,7 +2395,8 @@ async function guardarReprogramacion(){
     S.editPartidos={};
     render();
     if(faltan.length) bloqFin(false,'No se guardó todo','Quedaron sin guardar: '+faltan.join(', ')+
-      '. Volvé a intentar con esos.');
+      '. Volvé a intentar con esos.'+(faltan.some(id=>has(pedido[id].pl))?
+      ' Si el marcador sí quedó pero los penales no, falta actualizar el APPS-SCRIPT.gs en el Sheet (guía en el README).':''));
     else bloqFin(true,'Guardado con éxito',
       jugados? (jugados===ids.length?'Marcador'+(jugados>1?'es':'')+' cargado'+(jugados>1?'s':'')+
         '. Ahora cargá los goleadores en la pestaña Goleadores.'
